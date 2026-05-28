@@ -1,0 +1,10 @@
+*.o
+*.exe
+*.out
+*.app
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
