@@ -12,8 +12,8 @@
 
 CONFIG = {
     # ─── 神经网络 ───
-    "input_channels":      22,        # 输入特征图通道数
-    "num_actions":         164,       # 动作空间大小
+    "input_channels":      6,        # 输入特征图通道数
+    "num_actions":         225,       # 动作空间大小 (81 移动 + 144 墙)
     "conv_channels":       128,       # 卷积层通道数
     "dropout_rate":        0.3,       # Dropout 比例
 

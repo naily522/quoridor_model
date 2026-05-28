@@ -24,3 +24,4 @@
 #   net = QuoridorNet()
 #   policy, value = net(encoded_state)
 # =============================================================================
+import torch

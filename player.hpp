@@ -91,7 +91,7 @@ public:
     virtual void encode_state(const Quoridor::State& state);
     virtual void get_action_probs();
 
-    static constexpr int ACTION_NUM = 164;
+    static constexpr int ACTION_NUM = Quoridor::ACTION_NUM;
 
     char choose_type(const Quoridor::State& state) override;
     Quoridor::Action choose_move(const Quoridor::State& state) override;
