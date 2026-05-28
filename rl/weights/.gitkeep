@@ -1,0 +1,2 @@
+# 该目录存放训练导出的权重文件（.weights 二进制格式）。
+# 由 train.py 自动写入，C++ RLPlayer::load_weights() 读取。
