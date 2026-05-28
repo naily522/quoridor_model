@@ -112,6 +112,23 @@ private:
 
 RLPlayer::RLPlayer() : cached_action({0,0}, false, 0) {}
 
+void RLPlayer::encode_state(const Quoridor::State& state)
+{
+    // STUB: 待实现局面编码
+}
+
+void RLPlayer::get_action_probs()
+{
+    // STUB: 待实现神经网络推理
+    action_probs.assign(ACTION_NUM, 1.0f / ACTION_NUM);
+}
+
+Quoridor::Action RLPlayer::ActionSet::decode(int id, const Quoridor::State& s)
+{
+    // STUB: 简单将 id 映射为动作
+    return {{1, 1}, false, 0};
+}
+
 void RLPlayer::compute_action(const Quoridor::State& state)
 {
     // 1) 编码局面并获取 164 个动作的概率

@@ -79,13 +79,13 @@ bool Quoridor::Action::apply(State& state) const
 {
     if (this->isWall)
     {
-        if ((this->pos.first + this->pos.second)%2 != 1) return false;
+        if (this->pos.first % 2 != 0 || this->pos.second % 2 != 0) return false;
 
         State temp_state = state;
         // do walls overlap with existing wall?
         if (this->wall_dir == 0) // vertical
         {
-            for (int i = 0; i < 2 * WALL_LENGTH - 1; i++)
+            for (int i = -(WALL_LENGTH-1); i < WALL_LENGTH; i++)
             {
                 if (temp_state.board[this->pos.first + i][this->pos.second] == 1) return false;
                 temp_state.board[this->pos.first + i][this->pos.second] = 1;
@@ -93,7 +93,7 @@ bool Quoridor::Action::apply(State& state) const
         }
         else // horizontal
         {
-            for (int i = 0; i < 2 * WALL_LENGTH - 1; i++)
+            for (int i = -(WALL_LENGTH-1); i < WALL_LENGTH; i++)
             {
                 if (temp_state.board[this->pos.first][this->pos.second + i] == 1) return false;
                 temp_state.board[this->pos.first][this->pos.second + i] = 1;
