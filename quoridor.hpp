@@ -18,13 +18,17 @@ class Quoridor
 {
 public:
     static constexpr int ROW_SIZE=9, COLUMN_SIZE=9, WALL_LENGTH=2, WALL_NUM=10;
+    // 动作空间: 81 个落子位置 + 72 垂直墙 + 72 水平墙
+    static constexpr int ACTION_NUM = 225;
 
     bool verbose;
 
     struct State
     {
         pair<int, int> pos[2];
-        int board[2*ROW_SIZE+1][2*COLUMN_SIZE+1]; // (odd,odd)=square; (even,*)=wall/channel
+        bool board[2*ROW_SIZE+1][2*COLUMN_SIZE+1]; // (odd,odd)=square; (even,*)=wall/channel
+        bool h_wall[ROW_SIZE][COLUMN_SIZE];         // horizontal wall tracking (9x9)
+        bool v_wall[ROW_SIZE][COLUMN_SIZE];         // vertical wall tracking (9x9)
         int turn, wall_num[2]; // turn=1,2 for player1, player2; wall_num for remaining walls
 
         void reset();
@@ -58,6 +62,8 @@ private:
 void Quoridor::State::reset()
 {
     memset(this->board, 0, sizeof(this->board));
+    memset(this->h_wall, 0, sizeof(this->h_wall));
+    memset(this->v_wall, 0, sizeof(this->v_wall));
     // boundary walls (outer ring)
     for (int i = 0; i < 2*ROW_SIZE+1; i++)
     {
@@ -79,29 +85,34 @@ bool Quoridor::Action::apply(State& state) const
 {
     if (this->isWall)
     {
+        // accept only odd coordinates (wall start at player grid positions)
         if (this->pos.first % 2 != 0 || this->pos.second % 2 != 0) return false;
 
         State temp_state = state;
-        // do walls overlap with existing wall?
+        int wr = this->pos.first / 2;   // 9x9 index
+        int wc = this->pos.second / 2;
+
         if (this->wall_dir == 0) // vertical
         {
-            for (int i = -(WALL_LENGTH-1); i < WALL_LENGTH; i++)
+            for (int i = -(WALL_LENGTH - 1); i < WALL_LENGTH; i++)
             {
                 if (temp_state.board[this->pos.first + i][this->pos.second] == 1) return false;
                 temp_state.board[this->pos.first + i][this->pos.second] = 1;
             }
+            temp_state.v_wall[wr][wc] = true;
         }
         else // horizontal
         {
-            for (int i = -(WALL_LENGTH-1); i < WALL_LENGTH; i++)
+            for (int i = -(WALL_LENGTH - 1); i < WALL_LENGTH; i++)
             {
                 if (temp_state.board[this->pos.first][this->pos.second + i] == 1) return false;
                 temp_state.board[this->pos.first][this->pos.second + i] = 1;
             }
+            temp_state.h_wall[wr][wc] = true;
         }
 
         // check if the wall blocks all paths for either player
-        bool isconnect(const int board[2*ROW_SIZE+1][2*COLUMN_SIZE+1], pair<int, int> start, int target_row);
+        bool isconnect(const bool board[2*ROW_SIZE+1][2*COLUMN_SIZE+1], pair<int, int> start, int target_row);
 
         if (!isconnect(temp_state.board, state.pos[0], 2*ROW_SIZE-1) || !isconnect(temp_state.board, state.pos[1], 1)) return false;
 
@@ -117,7 +128,7 @@ bool Quoridor::Action::apply(State& state) const
     return true;
 }
 
-bool isconnect(const int board[2*Quoridor::ROW_SIZE+1][2*Quoridor::COLUMN_SIZE+1], pair<int, int> start, int target_row)
+bool isconnect(const bool board[2*Quoridor::ROW_SIZE+1][2*Quoridor::COLUMN_SIZE+1], pair<int, int> start, int target_row)
 {
     queue<pair<int, int>> q;
     bool isvisited[2*Quoridor::ROW_SIZE+1][2*Quoridor::COLUMN_SIZE+1] = {0};
