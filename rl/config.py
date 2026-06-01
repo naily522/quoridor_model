@@ -9,6 +9,7 @@
 #   from config import CONFIG
 #   lr = CONFIG["learning_rate"]
 # =============================================================================
+import os
 
 CONFIG = {
     # ─── 神经网络 ───
@@ -47,6 +48,6 @@ CONFIG = {
     "eval_start_epoch":    3,         # 前 N 轮不比较，直接采用新模型
 
     # ─── 权重导出 ───
-    "export_dir":          "rl/weights",           # 权重文件输出目录
+    "export_dir":          os.path.join(os.path.dirname(__file__), "weights"),
     "export_name":         "quoridor_v1.weights",  # C++ 端加载的文件名
 }
