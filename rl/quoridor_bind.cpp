@@ -75,15 +75,16 @@ static std::vector<std::tuple<int, int, int>> get_legal_walls_for_player(
     std::vector<std::tuple<int, int, int>> result;
     if (state.wall_num[player - 1] <= 0) return result;
 
-    // 墙只能放在偶数坐标上 (墙通道的交叉点)
-    for (int r = 1; r < 2*Quoridor::ROW_SIZE; r += 2) {
-        for (int c = 1; c < 2*Quoridor::COLUMN_SIZE; c += 2) {
-            // 尝试垂直墙 (占 (r, c), (r+1, c))
-            if (r + 1 < 2*Quoridor::ROW_SIZE) {
+    // 墙的中点坐标为偶数 (Action::apply 以此为中点，向两边扩展)
+    for (int r = 0; r <= 2*Quoridor::ROW_SIZE; r += 2) {
+        for (int c = 0; c <= 2*Quoridor::COLUMN_SIZE; c += 2) {
+            // 尝试垂直墙 (Action::apply 中覆盖 pos.first ± (WALL_LENGTH-1))
+            if (r - (Quoridor::WALL_LENGTH - 1) >= 0 &&
+                r + (Quoridor::WALL_LENGTH - 1) <= 2*Quoridor::ROW_SIZE) {
                 if (state.board[r][c] == 0 && state.board[r+1][c] == 0) {
                     Quoridor::State tmp = state;
                     bool ok = true;
-                    for (int i = 0; i < Quoridor::WALL_LENGTH; i++) {
+                    for (int i = -(Quoridor::WALL_LENGTH - 1); i < Quoridor::WALL_LENGTH; i++) {
                         if (tmp.board[r + i][c]) { ok = false; break; }
                         tmp.board[r + i][c] = 1;
                     }
@@ -92,12 +93,13 @@ static std::vector<std::tuple<int, int, int>> get_legal_walls_for_player(
                         result.push_back({r, c, 0});
                 }
             }
-            // 尝试水平墙 (占 (r, c), (r, c+1))
-            if (c + 1 < 2*Quoridor::COLUMN_SIZE) {
+            // 尝试水平墙
+            if (c - (Quoridor::WALL_LENGTH - 1) >= 0 &&
+                c + (Quoridor::WALL_LENGTH - 1) <= 2*Quoridor::COLUMN_SIZE) {
                 if (state.board[r][c] == 0 && state.board[r][c+1] == 0) {
                     Quoridor::State tmp = state;
                     bool ok = true;
-                    for (int i = 0; i < Quoridor::WALL_LENGTH; i++) {
+                    for (int i = -(Quoridor::WALL_LENGTH - 1); i < Quoridor::WALL_LENGTH; i++) {
                         if (tmp.board[r][c + i]) { ok = false; break; }
                         tmp.board[r][c + i] = 1;
                     }
