@@ -35,6 +35,7 @@ CONFIG = {
     "dirichlet_alpha":     0.3,       # 根节点 Dirichlet 噪声参数
     "dirichlet_weight":    0.25,      # 根节点噪声混合权重
     "goal_bonus_weight":   0.5,       # MCTS 中靠近目标的奖励权重 (前期引导用)
+    "wall_penalty":        0.2,       # MCTS 中放墙的惩罚 (鼓励移动，产生有胜负的对局)
 
     # ─── 自对弈 ───
     "games_per_iteration": 50,        # 每次迭代的自对弈局数

@@ -248,8 +248,9 @@ def mcts_search(state: State, net: torch.nn.Module,
             best_child = None
             sqrt_n = math.sqrt(node.visit_count + 1)
 
+            wall_penalty = config.get("wall_penalty", 0.0)
             for idx, child in node.children.items():
-                q = child.value
+                q = child.value - (wall_penalty if idx >= 81 else 0.0)
                 u = c_puct * child.prior_p * sqrt_n / (1 + child.visit_count)
                 score = q + u
                 if score > best_score:
