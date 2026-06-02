@@ -30,11 +30,11 @@ CONFIG = {
     "samples_per_epoch":   2500,      # 每轮新生成的数据量
 
     # ─── MCTS ───
-    "mcts_simulations":    100,       # 每次决策的 MCTS 模拟次数
+    "mcts_simulations":    200,       # 每次决策的 MCTS 模拟次数
     "c_puct":              1.5,       # MCTS 探索常数
     "dirichlet_alpha":     0.3,       # 根节点 Dirichlet 噪声参数
     "dirichlet_weight":    0.25,      # 根节点噪声混合权重
-    "goal_bonus_weight":   0.2,       # MCTS 中靠近目标的奖励权重 (前期引导用)
+    "goal_bonus_weight":   0.5,       # MCTS 中靠近目标的奖励权重 (前期引导用)
 
     # ─── 自对弈 ───
     "games_per_iteration": 50,        # 每次迭代的自对弈局数
