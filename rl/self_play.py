@@ -135,6 +135,19 @@ def min_distance_to_goal(state: State, player: int) -> float:
     return float('inf')
 
 
+def _distance_reward(state: State) -> float:
+    """Return a smooth position score in [-1, 1] from P1's perspective."""
+    d1 = min_distance_to_goal(state, 1)
+    d2 = min_distance_to_goal(state, 2)
+    if d1 == float('inf') and d2 == float('inf'):
+        return 0.0
+    if d1 == float('inf'):
+        return -1.0
+    if d2 == float('inf'):
+        return 1.0
+    return max(-1.0, min(1.0, (d2 - d1) / 8.0))
+
+
 # =============================================================================
 # MCTS 节点
 # =============================================================================
@@ -399,18 +412,17 @@ def play_one_game(net: torch.nn.Module,
             step += 1
 
     # ── 终局: 回溯 value_target ──
+    shaping = _distance_reward(state)
     if winner:
         # 正常终局: ±1
         value_p1 = 1.0 if winner == 1 else -1.0
     else:
-        # 平局: 按距离目标远近给部分奖励
-        d1 = min_distance_to_goal(state, 1)
-        d2 = min_distance_to_goal(state, 2)
-        if d1 == float('inf') and d2 == float('inf'):
-            value_p1 = 0.0
-        else:
-            # d2-d1 > 0 表示 P1 更近, 除以 8 映射到 [-1, 1] 范围
-            value_p1 = max(-1.0, min(1.0, (d2 - d1) / 8.0))
+        # 平局 / 超时: 仍保留距离型 shaping，避免整盘标签塌成 0
+        value_p1 = shaping
+
+    shaping_w = config.get("value_shaping_weight", 0.0)
+    if shaping_w > 0.0:
+        value_p1 = (1.0 - shaping_w) * value_p1 + shaping_w * shaping
 
     for s in game_data:
         s["value_target"] = value_p1 if s["turn"] == 1 else -value_p1

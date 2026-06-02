@@ -94,7 +94,7 @@ Player::~Player() {}
 class RLPlayer : public Player
 {
 public:
-    RLPlayer() : cached_action({0,0}, false, 0) {}
+    RLPlayer() : cached_action({0,0}, false, 0), action_probs(ACTION_NUM, 0.0f) {}
 
     bool load_weights(const char* path) {
         return weights.load(path);

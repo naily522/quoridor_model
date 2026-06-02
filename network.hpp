@@ -177,7 +177,7 @@ struct NetworkWeights {
 
     bool load(const char* path) {
         std::ifstream f(path, std::ios::binary);
-        if (!f) { std::cerr << "[Network] 无法打开: " << path << "\n"; return false; }
+        if (!f) { std::cerr << "[Network] Cannot open: " << path << "\n"; return false; }
 
         // conv_input: [32,6,3,3] + [32]
         read_floats(f, conv_input_w, 32 * 6 * 3 * 3);
@@ -210,7 +210,7 @@ struct NetworkWeights {
 
         bool ok = f.good();
         f.close();
-        if (!ok) { std::cerr << "[Network] 文件读取不完整\n"; return false; }
+        if (!ok) { std::cerr << "[Network] Incomplete weight file\n"; return false; }
         return true;
     }
 };

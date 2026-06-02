@@ -109,21 +109,20 @@ def play_eval_game(net_a: nn.Module, net_b: nn.Module,
 
 
 def evaluate(net: nn.Module, best_net: nn.Module, config: dict) -> float:
-    """评估新网络 vs 最佳网络，返回新网络胜率。"""
-    wins = 0
+    """评估新网络 vs 最佳网络，返回新网络平均得分 [-1, 1]。"""
+    total_score = 0.0
     total = config["eval_games"]
 
     for i in range(total):
         a_plays_as = 1 if i < total // 2 else 2
-        winner, score = play_eval_game(net, best_net, config, a_plays_as)
-        if winner == a_plays_as:
-            wins += 1
+        _, score = play_eval_game(net, best_net, config, a_plays_as)
+        total_score += score
 
         print(f"  评估 {i + 1:>2}/{total}  "
               f"score={score:+.3f}  "
-              f"累计胜率 {wins/(i+1):.3f}", flush=True)
+              f"平均分 {total_score/(i+1):+.3f}", flush=True)
 
-    return wins / total
+    return total_score / total
 
 
 # =============================================================================
@@ -302,11 +301,10 @@ def main():
             print("[3/3] 评估...")
             net.eval()
             best_net.eval()
-            win_rate = evaluate(net, best_net, config)
-            print(f"  [OK] 新网络 vs 最佳网络 胜率: {win_rate:.3f} "
-                  f"(阈值 {config['eval_threshold']})")
+            avg_score = evaluate(net, best_net, config)
+            print(f"  [OK] 新网络 vs 最佳网络 平均分: {avg_score:.3f}")
 
-            if win_rate >= config["eval_threshold"]:
+            if avg_score > 0:
                 print("  -> 新网络胜出，更新最佳模型 + 导出权重")
                 best_state_dict = copy.deepcopy(net.state_dict())
                 best_net.load_state_dict(best_state_dict)
