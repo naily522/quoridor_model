@@ -34,9 +34,10 @@ CONFIG = {
     "c_puct":              1.5,       # MCTS 探索常数
     "dirichlet_alpha":     0.3,       # 根节点 Dirichlet 噪声参数
     "dirichlet_weight":    0.25,      # 根节点噪声混合权重
-    "goal_bonus_weight":   0.5,       # MCTS 中靠近目标的奖励权重 (前期引导用)
-    "wall_penalty":        0.2,       # MCTS 中放墙的惩罚 (鼓励移动，产生有胜负的对局)
-    "value_shaping_weight":0.35,      # value target 中形状奖励占比，缓解大量 draw 导致的 0 标签
+    "goal_bonus_weight":   0.3,       # MCTS leaf_value 中 BFS 距离差引导权重
+    "wall_penalty":        0.0,       # 不再固定惩罚放墙，避免先天压制墙策略
+    "terminal_value_weight": 0.7,     # 终局结果在 value_target 中的权重
+    "shape_value_weight":  0.3,       # 过程中的距离差 shaping 权重
 
     # ─── 自对弈 ───
     "games_per_iteration": 50,        # 每次迭代的自对弈局数
@@ -45,9 +46,9 @@ CONFIG = {
     "temperature_min":     0.1,       # 后续步骤的固定温度
 
     # ─── 评估 ───
-    "eval_games":          50,        # 评估时的对局数
+    "eval_games":          20,        # 评估时的对局数
     "eval_threshold":      0.55,      # 胜率超过此值才替换最佳模型
-    "eval_start_epoch":    3,         # 前 N 轮不比较，直接采用新模型
+    "eval_start_epoch":    10,        # 前 N 轮不比较，直接采用新模型
 
     # ─── 权重导出 ───
     "export_dir":          os.path.join(os.path.dirname(__file__), "weights"),

@@ -115,7 +115,7 @@ def evaluate(net: nn.Module, best_net: nn.Module, config: dict) -> float:
 
     for i in range(total):
         a_plays_as = 1 if i < total // 2 else 2
-        _, score = play_eval_game(net, best_net, config, a_plays_as)
+        winner, score = play_eval_game(net, best_net, config, a_plays_as)
         total_score += score
 
         print(f"  评估 {i + 1:>2}/{total}  "
@@ -304,7 +304,7 @@ def main():
             avg_score = evaluate(net, best_net, config)
             print(f"  [OK] 新网络 vs 最佳网络 平均分: {avg_score:.3f}")
 
-            if avg_score > 0:
+            if avg_score >= config["eval_threshold"]:
                 print("  -> 新网络胜出，更新最佳模型 + 导出权重")
                 best_state_dict = copy.deepcopy(net.state_dict())
                 best_net.load_state_dict(best_state_dict)
@@ -314,7 +314,7 @@ def main():
                 export_weights(net, export_path)
                 print(f"  -> 权重已导出: {export_path}")
             else:
-                print("  -> 未达到阈值，保持当前最佳模型")
+                print(f"  -> 未达到阈值 ({config['eval_threshold']:.3f})，保持当前最佳模型")
 
         # ── 保存 checkpoint ──
         ckpt_dir = os.path.join(config["export_dir"], "checkpoints")

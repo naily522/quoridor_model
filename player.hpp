@@ -15,6 +15,7 @@ public:
     virtual char choose_type(const Quoridor::State& state) = 0;
     virtual Quoridor::Action choose_move(const Quoridor::State& state) = 0;
     virtual Quoridor::Action choose_wall(const Quoridor::State& state) = 0;
+    virtual Quoridor::Action choose_action(const Quoridor::State& state) = 0;
     virtual ~Player();
 };
 
@@ -84,6 +85,13 @@ public:
         std::cout << "Dir (0=vert,1=horiz): "; std::cin >> d;
         return {{r, c}, true, d};
     }
+
+    Quoridor::Action choose_action(const Quoridor::State& state) override
+    {
+        if (choose_type(state) == 'm') return choose_move(state);
+        return choose_wall(state);
+    }
+
 };
 
 Player::~Player() {}
@@ -164,11 +172,11 @@ public:
         // 合法性掩码 + 重归一化
         action_probs.assign(ACTION_NUM, 0.0f);
 
-        int legal_count = 0;
+        std::vector<int> legal_indices;
         for (auto& a : get_all_legal_actions(state)) {
             int idx = action_to_index(a);
             action_probs[idx] = raw_policy[idx];
-            legal_count++;
+            legal_indices.push_back(idx);
         }
 
         float sum = 0;
@@ -177,9 +185,10 @@ public:
             for (float& p : action_probs) p /= sum;
         } else {
             // fallback: 均匀分布
-            float uniform = 1.0f / legal_count;
-            for (float& p : action_probs)
-                if (p > 0) p = uniform;
+            if (!legal_indices.empty()) {
+                float uniform = 1.0f / (float)legal_indices.size();
+                for (int idx : legal_indices) action_probs[idx] = uniform;
+            }
         }
     }
 
@@ -284,6 +293,11 @@ public:
         return cached_action;
     }
 
+    Quoridor::Action choose_action(const Quoridor::State& state) override {
+        compute_action(state);
+        return cached_action;
+    }
+
     // 获取调试信息
     float get_value() const { return value; }
     const std::vector<float>& get_probs() const { return action_probs; }
@@ -312,6 +326,17 @@ private:
     void compute_action(const Quoridor::State& state) {
         encode_state(state);
         get_action_probs(state);
+
+        bool has_legal = false;
+        for (float p : action_probs) {
+            if (p > 0.0f) {
+                has_legal = true;
+                break;
+            }
+        }
+        if (!has_legal) {
+            throw std::runtime_error("RLPlayer: no legal actions available");
+        }
 
         // 按概率采样
         float r = (float)rand() / RAND_MAX;

@@ -58,10 +58,13 @@ int main(int argc, char* argv[])
 
         Player* cur = players[state.turn - 1];
 
-        if (cur->choose_type(state) == 'm')
-            while (!cur->choose_move(state).apply(state));
-        else
-            while (!cur->choose_wall(state).apply(state));
+        if (cur == &ai) {
+            cur->choose_action(state).apply(state);
+        } else if (cur->choose_type(state) == 'm') {
+            cur->choose_move(state).apply(state);
+        } else {
+            cur->choose_wall(state).apply(state);
+        }
 
         step++;
 

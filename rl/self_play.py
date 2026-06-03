@@ -135,19 +135,6 @@ def min_distance_to_goal(state: State, player: int) -> float:
     return float('inf')
 
 
-def _distance_reward(state: State) -> float:
-    """Return a smooth position score in [-1, 1] from P1's perspective."""
-    d1 = min_distance_to_goal(state, 1)
-    d2 = min_distance_to_goal(state, 2)
-    if d1 == float('inf') and d2 == float('inf'):
-        return 0.0
-    if d1 == float('inf'):
-        return -1.0
-    if d2 == float('inf'):
-        return 1.0
-    return max(-1.0, min(1.0, (d2 - d1) / 8.0))
-
-
 # =============================================================================
 # MCTS 节点
 # =============================================================================
@@ -261,9 +248,8 @@ def mcts_search(state: State, net: torch.nn.Module,
             best_child = None
             sqrt_n = math.sqrt(node.visit_count + 1)
 
-            wall_penalty = config.get("wall_penalty", 0.0)
             for idx, child in node.children.items():
-                q = child.value - (wall_penalty if idx >= 81 else 0.0)
+                q = child.value
                 u = c_puct * child.prior_p * sqrt_n / (1 + child.visit_count)
                 score = q + u
                 if score > best_score:
@@ -289,16 +275,17 @@ def mcts_search(state: State, net: torch.nn.Module,
                 leaf_policy, leaf_value_t = net(leaf_tensor)
             leaf_value = float(leaf_value_t.item())
 
-            # 目标接近奖励: 引导 MCTS 偏向朝目标行移动
+            # 距离引导奖励: 用双方最短距离差做 shaping
             bonus_w = config.get("goal_bonus_weight", 0.0)
             if bonus_w > 0:
-                turn = node.state.turn
-                my_row = node.state.get_pos(turn)[0]
-                if turn == 1:
-                    progress = (my_row - 1) / (2 * ROW_SIZE - 2)  # row 1→17
-                else:
-                    progress = (2 * ROW_SIZE - 1 - my_row) / (2 * ROW_SIZE - 2)  # row 17→1
-                leaf_value += bonus_w * (progress - 0.5)
+                d1 = min_distance_to_goal(node.state, 1)
+                d2 = min_distance_to_goal(node.state, 2)
+                if d1 != float('inf') or d2 != float('inf'):
+                    if d1 == float('inf') or d2 == float('inf'):
+                        distance_score = 0.0
+                    else:
+                        distance_score = max(-1.0, min(1.0, (d2 - d1) / 8.0))
+                    leaf_value += bonus_w * distance_score
 
             # 扩展叶子
             legal = get_legal_actions(node.state)
@@ -412,17 +399,21 @@ def play_one_game(net: torch.nn.Module,
             step += 1
 
     # ── 终局: 回溯 value_target ──
-    shaping = _distance_reward(state)
-    if winner:
-        # 正常终局: ±1
-        value_p1 = 1.0 if winner == 1 else -1.0
+    # 距离 shaping (双方最短路径差，归一化到 [-1, 1]，从 P1 视角)
+    d1 = min_distance_to_goal(state, 1)
+    d2 = min_distance_to_goal(state, 2)
+    if d1 == float('inf') and d2 == float('inf'):
+        shape = 0.0
     else:
-        # 平局 / 超时: 仍保留距离型 shaping，避免整盘标签塌成 0
-        value_p1 = shaping
+        shape = max(-1.0, min(1.0, (d2 - d1) / 8.0))
 
-    shaping_w = config.get("value_shaping_weight", 0.0)
-    if shaping_w > 0.0:
-        value_p1 = (1.0 - shaping_w) * value_p1 + shaping_w * shaping
+    terminal = (1.0 if winner == 1 else -1.0) if winner else 0.0
+    if winner:
+        tw = config.get("terminal_value_weight", 0.7)
+        sw = config.get("shape_value_weight", 0.3)
+        value_p1 = tw * terminal + sw * shape
+    else:
+        value_p1 = shape  # 平局无终局信号，用完整 distance shaping
 
     for s in game_data:
         s["value_target"] = value_p1 if s["turn"] == 1 else -value_p1
