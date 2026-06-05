@@ -213,6 +213,9 @@ def mcts_search(state: State, net: torch.nn.Module,
         pi[action_to_index(legal_actions[0])] = 1.0
         return pi
 
+    # 动态调整搜索次数: 动作少时无需过多模拟
+    sims = min(config["mcts_simulations"], max(80, len(legal_actions) * 15))
+
     # ── 根节点网络评估 ──
     state_tensor = encode_state(state).unsqueeze(0).to(device)  # [1, 6, 9, 9]
     with torch.no_grad():
@@ -411,11 +414,18 @@ def play_one_game(net: torch.nn.Module,
 
     # ── 纯终局 value_target: 所有局面统一使用终局结果 ±1 ──
     if not winner:
-        for s in game_data:
-            s["value_target"] = -1.0
-    else:
+        d1 = min_distance_to_goal(state, 1)
+        d2 = min_distance_to_goal(state, 2)
+        if d1 != float('inf') and d2 != float('inf') and d1 < d2:
+            winner = 1
+        elif d1 != float('inf') and d2 != float('inf') and d2 < d1:
+            winner = 2
+    if winner:
         for s in game_data:
             s["value_target"] = 1.0 if winner == s["turn"] else -1.0
+    else:
+        for s in game_data:
+            s["value_target"] = -1.0
 
     return game_data
 
@@ -503,12 +513,19 @@ def play_vs_opponent_game(net: torch.nn.Module,
 
     # ── 得分与纯终局 value_target ──
     if not winner:
-        for s in game_data:
-            s["value_target"] = -1.0
-        score = -1.0
-    else:
+        d1 = min_distance_to_goal(state, 1)
+        d2 = min_distance_to_goal(state, 2)
+        if d1 != float('inf') and d2 != float('inf') and d1 < d2:
+            winner = 1
+        elif d1 != float('inf') and d2 != float('inf') and d2 < d1:
+            winner = 2
+    if winner:
         for s in game_data:
             s["value_target"] = 1.0 if winner == s["turn"] else -1.0
         score = 1.0 if net_plays_as == winner else -1.0
+    else:
+        for s in game_data:
+            s["value_target"] = -1.0
+        score = -1.0
 
     return game_data, score
