@@ -5,7 +5,7 @@
 #   强化学习训练循环，协调自对弈、对手池对战、训练、导出等环节。
 #
 # 每轮流程:
-#   阶段 1 — 自对弈 (25 局): 不对称墙权限，一方能放墙一方不能
+#   阶段 1 — 自对弈 (25 局): 双方均可放墙，对称对弈
 #   阶段 2 — 对手池对战 (~25 局): 前一半新模型不能放墙，后一半双方都能放墙
 #   阶段 3 — 训练: 从 buffer 采样 → 更新网络参数
 #   阶段 4 — 更新对手池 + 保存 checkpoint + 导出权重
@@ -225,12 +225,10 @@ def main():
         total_samples = 0
         global_idx = 0
 
-        # ── 阶段 1: 自对弈 (25 局，不对称墙权限) ──
+        # ── 阶段 1: 自对弈 (25 局，双方均可放墙) ──
         print("自对弈...", flush=True)
         for i in range(SELF_PLAY_GAMES):
-            # 交替限制不同玩家: 奇数局 P1 不能放墙, 偶数局 P2 不能放墙
-            nw = 1 if i % 2 == 0 else 2
-            samples = play_one_game(net, config, no_wall_player=nw)
+            samples = play_one_game(net, config)
             buffer.push(samples)
             total_samples += len(samples)
             global_idx += 1

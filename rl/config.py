@@ -34,11 +34,11 @@ CONFIG = {
     "c_puct":              1.5,       # MCTS 探索常数
     "dirichlet_alpha":     0.3,       # 根节点 Dirichlet 噪声参数
     "dirichlet_weight":    0.25,      # 根节点噪声混合权重
-    "wall_reward_weight":  0.1,       # 放墙奖励权重（对手距离增加量 / 8）
-    "goal_bonus_weight":   1.5,       # MCTS leaf_value 中 BFS 距离差引导权重
-    "wall_penalty":        0.0,       # 不再固定惩罚放墙，避免先天压制墙策略
-    "terminal_value_weight": 0.7,     # 终局结果在 value_target 中的权重
-    "shape_value_weight":  0.3,       # 过程中的距离差 shaping 权重
+    "wall_reward_weight":  0.5,       # 放墙奖励权重，提高使墙与移动 reward 可比
+    "goal_bonus_weight":   0.5,       # MCTS 距离引导权重，降低以免过分追逐距离
+    "wall_penalty":        0.0,
+    "terminal_value_weight": 0.9,     # 终局结果权重，强化胜负信号主导
+    "shape_value_weight":  0.1,       # 过程 shaping，仅作辅助
 
     # ─── 自对弈 ───
     "games_per_iteration": 50,        # 每次迭代的自对弈局数

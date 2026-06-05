@@ -500,7 +500,7 @@ def play_vs_opponent_game(net: torch.nn.Module,
 
     eval_config = dict(config)
     eval_config["dirichlet_weight"] = 0.0       # 对战不打噪声
-    eval_config["temperature"] = config["temperature_min"]  # 小温度保证多样性
+    eval_config["temperature"] = 0.5           # vs-pool 温度，保证局面多样性
 
     while step < MAX_MOVES:
         winner = check_terminal(state)
