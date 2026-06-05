@@ -106,7 +106,7 @@ def load_checkpoint(path: str, net: nn.Module,
                     optimizer: optim.Optimizer,
                     buffer_capacity: int) -> tuple[int, ReplayBuffer, OpponentPool]:
     """恢复训练状态，兼容新旧 checkpoint 格式。"""
-    ckpt = torch.load(path, map_location="cpu")
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
     net.load_state_dict(ckpt["model_state_dict"])
     optimizer.load_state_dict(ckpt["optimizer_state_dict"])
 
@@ -198,7 +198,7 @@ def main():
 
     # ── 仅导出权重 ──
     if args.export_only:
-        ckpt = torch.load(args.export_only, map_location="cpu")
+        ckpt = torch.load(args.export_only, map_location="cpu", weights_only=False)
         net.load_state_dict(ckpt["model_state_dict"])
         os.makedirs(config["export_dir"], exist_ok=True)
         path = os.path.join(config["export_dir"], config["export_name"])
