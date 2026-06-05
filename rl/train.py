@@ -234,12 +234,16 @@ def main():
             global_idx += 1
 
             first = samples[0]
-            won_by = first["turn"] if first["value_target"] > 0 else (3 - first["turn"])
+            if any(s["value_target"] > 0 for s in samples):
+                won_by = first["turn"] if first["value_target"] > 0 else (3 - first["turn"])
+                tag = f"P{won_by}胜"
+            else:
+                tag = "平局"
             print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
                   f"本局 {len(samples):>3}步  "
                   f"累计 {total_samples:>5}  "
                   f"buffer {len(buffer):>6}  "
-                  f"P{won_by}胜  [vs-self]",
+                  f"{tag:>5}  [vs-self]",
                   flush=True)
 
         # ── 阶段 2: 对手池对战 ──
@@ -305,12 +309,16 @@ def main():
                 global_idx += 1
 
                 first = samples[0]
-                won_by = first["turn"] if first["value_target"] > 0 else (3 - first["turn"])
+                if any(s["value_target"] > 0 for s in samples):
+                    won_by = first["turn"] if first["value_target"] > 0 else (3 - first["turn"])
+                    tag = f"P{won_by}胜"
+                else:
+                    tag = "平局"
                 print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
                       f"本局 {len(samples):>3}步  "
                       f"累计 {total_samples:>5}  "
                       f"buffer {len(buffer):>6}  "
-                      f"P{won_by}胜  [vs-self]",
+                      f"{tag:>5}  [vs-self]",
                       flush=True)
 
         print(f"  [OK] 本轮 {total_samples} 样本, buffer 总大小 {len(buffer)}")
