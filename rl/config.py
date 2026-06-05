@@ -30,7 +30,7 @@ CONFIG = {
     "samples_per_epoch":   2500,      # 每轮新生成的数据量
 
     # ─── MCTS ───
-    "mcts_simulations":    200,       # 增大搜索次数，弥补纯终局信号的稀疏性
+    "mcts_simulations":    300,       # 搜索次数
     "c_puct":              1.5,       # MCTS 探索常数
     "dirichlet_alpha":     0.3,       # 根节点 Dirichlet 噪声参数
     "dirichlet_weight":    0.25,      # 根节点噪声混合权重
