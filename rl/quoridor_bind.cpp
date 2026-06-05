@@ -277,6 +277,13 @@ PYBIND11_MODULE(quoridor_cpp, m)
         player1 的目标行 = 18 (底部), player2 的目标行 = 1 (顶部)。
         )");
 
+    // min_distance_to_goal: BFS 最短距离
+    m.def("min_distance_to_goal",
+        [](const Quoridor::State& state, int player) {
+            return min_distance_to_goal(state, player);
+        }, py::arg("state"), py::arg("player"),
+        "返回玩家到目标行的 BFS 最短步数，不可达返回 999");
+
     // 获取某玩家所有合法移动目标
     m.def("get_legal_moves", &get_legal_moves_for_player,
         py::arg("state"), py::arg("player"),

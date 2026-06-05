@@ -13,7 +13,7 @@ import os
 
 CONFIG = {
     # ─── 神经网络 ───
-    "input_channels":      6,        # 输入特征图通道数
+    "input_channels":      7,        # 输入特征图通道数
     "num_actions":         225,       # 动作空间大小 (81 移动 + 144 墙)
     "conv_channels":       32,        # 卷积层通道数
     "policy_channels":     32,        # 策略头 3×3 卷积降维通道数

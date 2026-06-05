@@ -2,16 +2,13 @@
 # 训练主入口 — train.py
 #
 # 功能:
-#   强化学习训练循环的主脚本，协调自对弈、训练、评估、导出等环节。
+#   强化学习训练循环，协调自对弈、对手池对战、训练、导出等环节。
 #
-# 主循环:
-#   for each epoch:
-#     阶段 1 — 自对弈:  当前网络自对弈 M 局 → 存入 replay buffer
-#     阶段 2 — 训练:    从 buffer 采样 mini-batch → 更新网络参数
-#     阶段 3 — 评估:    新网络 vs 历史最佳 → 胜率够高才替换 + 导出权重
-#
-# 损失函数:
-#   loss = policy_cross_entropy + value_mse
+# 每轮流程:
+#   阶段 1 — 自对弈 (25 局): 不对称墙权限，一方能放墙一方不能
+#   阶段 2 — 对手池对战 (~25 局): 前一半新模型不能放墙，后一半双方都能放墙
+#   阶段 3 — 训练: 从 buffer 采样 → 更新网络参数
+#   阶段 4 — 更新对手池 + 保存 checkpoint + 导出权重
 #
 # 启动方式:
 #   python rl/train.py                    # 从头训练
@@ -21,6 +18,7 @@
 import os
 import argparse
 import copy
+import random
 import numpy as np
 import torch
 import torch.nn as nn
@@ -29,9 +27,32 @@ from torch.optim.lr_scheduler import ExponentialLR
 from collections import deque
 from config import CONFIG
 from model import QuoridorNet, export_weights
-from self_play import (play_one_game, check_terminal, mcts_search,
-                        action_to_index, min_distance_to_goal)
-from quoridor_cpp import State, get_legal_actions
+from self_play import play_one_game, play_vs_opponent_game
+
+
+# =============================================================================
+# 对手池
+# =============================================================================
+
+class OpponentPool:
+    """存储历史模型参数，用于对抗训练。"""
+
+    def __init__(self, max_size: int = 50):
+        self.state_dicts = []
+        self.max_size = max_size
+
+    def add(self, state_dict: dict):
+        if len(self.state_dicts) >= self.max_size:
+            self.state_dicts.pop(0)
+        self.state_dicts.append(copy.deepcopy(state_dict))
+
+    def sample(self) -> dict | None:
+        if not self.state_dicts:
+            return None
+        return random.choice(self.state_dicts)
+
+    def __len__(self) -> int:
+        return len(self.state_dicts)
 
 
 # =============================================================================
@@ -45,12 +66,10 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=capacity)
 
     def push(self, samples: list[dict]):
-        """添加一批样本。"""
         for s in samples:
             self.buffer.append(s)
 
     def sample(self, batch_size: int) -> dict:
-        """随机采样一个 mini-batch。"""
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         batch = [self.buffer[i] for i in indices]
 
@@ -66,63 +85,44 @@ class ReplayBuffer:
 
 
 # =============================================================================
-# 评估 — 新网络 vs 最佳网络
+# Checkpoint 读写
 # =============================================================================
 
-def play_eval_game(net_a: nn.Module, net_b: nn.Module,
-                   config: dict, a_plays_as: int) -> tuple[int, float]:
-    """net_a 与 net_b 对战一局，返回 (winner, score)，score 从 net_a 方视角 [-1, 1]。"""
-    state = State()
-    state.reset()
-    step = 0
-    MAX_MOVES = 120
-
-    eval_config = dict(config)
-    eval_config["dirichlet_weight"] = 0.0
-    eval_config["temperature"] = 0.0
-
-    while step < MAX_MOVES:
-        winner = check_terminal(state)
-        if winner:
-            score = 1.0 if winner == a_plays_as else -1.0
-            return winner, score
-
-        cur_net = net_a if state.turn == a_plays_as else net_b
-        pi = mcts_search(state, cur_net, eval_config)
-        action_idx = int(pi.argmax())
-
-        for a in get_legal_actions(state):
-            if action_to_index(a) == action_idx:
-                if a.apply(state):
-                    step += 1
-                break
-
-    # 未分胜负：用 BFS 最短距离算分（从 net_a 方视角）
-    d1 = min_distance_to_goal(state, 1)
-    d2 = min_distance_to_goal(state, 2)
-    raw = (d2 - d1) / 8.0 if (d1 != float('inf') or d2 != float('inf')) else 0.0
-    score = max(-1.0, min(1.0, raw))
-    if a_plays_as == 2:
-        score = -score
-    winner = 1 if d1 < d2 else (2 if d2 < d1 else 0)
-    return winner, score
+def save_checkpoint(net: nn.Module, optimizer: optim.Optimizer,
+                    epoch: int, buffer: ReplayBuffer, pool: OpponentPool,
+                    path: str):
+    """保存完整训练状态。"""
+    torch.save({
+        "epoch": epoch,
+        "model_state_dict": net.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "buffer": list(buffer.buffer),
+        "pool": pool.state_dicts,
+    }, path)
+    print(f"  [保存] checkpoint -> {path}")
 
 
-def evaluate(net: nn.Module, best_net: nn.Module, config: dict) -> float:
-    """评估新网络 vs 最佳网络，返回新网络平均得分 [-1, 1]。"""
-    total_score = 0.0
-    total = config["eval_games"]
+def load_checkpoint(path: str, net: nn.Module,
+                    optimizer: optim.Optimizer,
+                    buffer_capacity: int) -> tuple[int, ReplayBuffer, OpponentPool]:
+    """恢复训练状态，兼容新旧 checkpoint 格式。"""
+    ckpt = torch.load(path, map_location="cpu")
+    net.load_state_dict(ckpt["model_state_dict"])
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
 
-    for i in range(total):
-        a_plays_as = 1 if i < total // 2 else 2
-        winner, score = play_eval_game(net, best_net, config, a_plays_as)
-        total_score += score
+    epoch = ckpt["epoch"]
 
-        print(f"  评估 {i + 1:>2}/{total}  "
-              f"score={score:+.3f}  "
-              f"平均分 {total_score/(i+1):+.3f}", flush=True)
+    buffer = ReplayBuffer(buffer_capacity)
+    if "buffer" in ckpt and ckpt["buffer"]:
+        for s in ckpt["buffer"]:
+            buffer.buffer.append(s)
 
-    return total_score / total
+    pool = OpponentPool()
+    if "pool" in ckpt and ckpt["pool"]:
+        for sd in ckpt["pool"]:
+            pool.state_dicts.append(sd)
+
+    return epoch, buffer, pool
 
 
 # =============================================================================
@@ -138,10 +138,7 @@ def train_step(net: nn.Module, optimizer: optim.Optimizer,
 
     pred_policies, pred_values = net(states)
 
-    # 策略损失: 交叉熵  L = -Σ π_target · log(p_pred)
     policy_loss = -(target_policies * torch.log(pred_policies + 1e-8)).sum(dim=1).mean()
-
-    # 价值损失: MSE  L = (v_target - v_pred)²
     value_loss = ((pred_values - target_values) ** 2).mean()
 
     loss = policy_loss + value_loss
@@ -154,36 +151,20 @@ def train_step(net: nn.Module, optimizer: optim.Optimizer,
 
 
 # =============================================================================
-# Checkpoint 读写
+# 游戏阶段常量
 # =============================================================================
 
-def save_checkpoint(net: nn.Module, optimizer: optim.Optimizer,
-                    epoch: int, best_state_dict: dict, path: str):
-    """保存训练状态到文件。"""
-    torch.save({
-        "epoch": epoch,
-        "model_state_dict": net.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "best_state_dict": best_state_dict,
-    }, path)
-    print(f"  [保存] checkpoint -> {path}")
-
-
-def load_checkpoint(path: str, net: nn.Module,
-                    optimizer: optim.Optimizer) -> tuple[int, dict]:
-    """从文件恢复训练状态，返回 (epoch, best_state_dict)。"""
-    checkpoint = torch.load(path, map_location="cpu")
-    net.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    return checkpoint["epoch"], checkpoint.get("best_state_dict")
-
+GAMES_PER_EPOCH   = 50
+SELF_PLAY_GAMES    = 25
+VS_POOL_NOWALL     = 12   # 新模型不能放墙
+VS_POOL_FULL       = 13   # 双方都能放墙
 
 # =============================================================================
 # 主入口
 # =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Quoridor AlphaZero 训练")
+    parser = argparse.ArgumentParser(description="Quoridor 强化学习训练")
     parser.add_argument("--resume", type=str, default=None,
                         help="从 checkpoint 文件恢复训练")
     parser.add_argument("--export-only", type=str, default=None,
@@ -197,21 +178,23 @@ def main():
 
     # ── 网络 ──
     net = QuoridorNet(config["input_channels"]).to(device)
-    best_net = QuoridorNet(config["input_channels"]).to(device)
+    opponent_net = QuoridorNet(config["input_channels"]).to(device)
     optimizer = optim.Adam(net.parameters(), lr=config["learning_rate"])
     scheduler = ExponentialLR(optimizer, gamma=config["lr_decay"])
 
+    # ── buffer / 对手池 ──
+    buffer = ReplayBuffer(config["buffer_capacity"])
+    pool = OpponentPool()
+
     start_epoch = 0
-    best_state_dict = None
 
     # ── 从 checkpoint 恢复 ──
     if args.resume:
-        epoch, best_sd = load_checkpoint(args.resume, net, optimizer)
+        epoch, buffer, pool = load_checkpoint(
+            args.resume, net, optimizer, config["buffer_capacity"])
         start_epoch = epoch + 1
-        print(f"恢复训练: 从 epoch {epoch + 1} 继续")
-        if best_sd is not None:
-            best_state_dict = best_sd
-            best_net.load_state_dict(best_state_dict)
+        print(f"恢复训练: 从 epoch {epoch + 1} 继续, "
+              f"buffer {len(buffer)}, 对手池 {len(pool)}")
 
     # ── 仅导出权重 ──
     if args.export_only:
@@ -223,17 +206,12 @@ def main():
         print(f"权重导出 -> {path}")
         return
 
-    # ── 初始化缓冲区 ──
-    buffer = ReplayBuffer(config["buffer_capacity"])
-    if best_state_dict is None:
-        best_state_dict = copy.deepcopy(net.state_dict())
-        best_net.load_state_dict(best_state_dict)
-
-    min_buffer = config["batch_size"] * 4   # buffer 攒够才开始训练
+    min_buffer = config["batch_size"] * 4
     steps_per_epoch = max(1, config["samples_per_epoch"] // config["batch_size"])
 
     print(f"开始训练: {config['epochs']} epochs, "
-          f"每轮 {config['games_per_iteration']} 局自对弈, "
+          f"每轮 {GAMES_PER_EPOCH} 局对弈 ({SELF_PLAY_GAMES} 自对弈 "
+          f"+ {VS_POOL_NOWALL} vs-pool-nowall + {VS_POOL_FULL} vs-pool-full), "
           f"训练 {steps_per_epoch} 步, "
           f"batch_size={config['batch_size']}")
 
@@ -243,84 +221,140 @@ def main():
         print(f"Epoch {epoch + 1}/{config['epochs']}")
         print(f"{'='*50}", flush=True)
 
-        # ── 阶段 1: 自对弈数据生成 ──
-        print("[1/3] 自对弈...", flush=True)
         net.eval()
         total_samples = 0
-        for game_idx in range(config["games_per_iteration"]):
-            samples = play_one_game(net, config)
+        global_idx = 0
+
+        # ── 阶段 1: 自对弈 (25 局，不对称墙权限) ──
+        print("自对弈...", flush=True)
+        for i in range(SELF_PLAY_GAMES):
+            # 交替限制不同玩家: 奇数局 P1 不能放墙, 偶数局 P2 不能放墙
+            nw = 1 if i % 2 == 0 else 2
+            samples = play_one_game(net, config, no_wall_player=nw)
             buffer.push(samples)
             total_samples += len(samples)
+            global_idx += 1
 
             avg_r = sum(abs(s["value_target"]) for s in samples) / len(samples)
-            print(f"  对局 {game_idx + 1:>3}/{config['games_per_iteration']}  "
-                      f"样本 {total_samples:>4}  "
+            print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
+                  f"本局 {len(samples):>3}样  "
+                  f"累计 {total_samples:>5}  "
+                  f"buffer {len(buffer):>6}  "
+                  f"|r|={avg_r:.3f}  [vs-self]",
+                  flush=True)
+
+        # ── 阶段 2: 对手池对战 ──
+        if len(pool) > 0:
+            print("对手池对战...", flush=True)
+
+            # 2a: 新模型不能放墙，对手可以放墙
+            for i in range(VS_POOL_NOWALL):
+                swap = (i >= VS_POOL_NOWALL // 2)
+                net_plays_as = 2 if swap else 1
+                tag = "[vs-pool(swap)]" if swap else "[vs-pool]"
+
+                opp_sd = pool.sample()
+                opponent_net.load_state_dict(opp_sd)
+                opponent_net.eval()
+
+                samples, score = play_vs_opponent_game(
+                    net, opponent_net, config,
+                    net_plays_as=net_plays_as,
+                    no_wall_net=True, no_wall_opp=False)
+                buffer.push(samples)
+                total_samples += len(samples)
+                global_idx += 1
+
+                print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
+                      f"本局 {len(samples):>3}样  "
+                      f"累计 {total_samples:>5}  "
                       f"buffer {len(buffer):>6}  "
-                      f"reward={avg_r:.3f}", flush=True)
+                      f"score={score:+.3f}  {tag}",
+                      flush=True)
+
+            # 2b: 双方都能放墙
+            for i in range(VS_POOL_FULL):
+                swap = (i >= VS_POOL_FULL // 2)
+                net_plays_as = 2 if swap else 1
+                tag = "[vs-pool-full(swap)]" if swap else "[vs-pool-full]"
+
+                opp_sd = pool.sample()
+                opponent_net.load_state_dict(opp_sd)
+                opponent_net.eval()
+
+                samples, score = play_vs_opponent_game(
+                    net, opponent_net, config,
+                    net_plays_as=net_plays_as,
+                    no_wall_net=False, no_wall_opp=False)
+                buffer.push(samples)
+                total_samples += len(samples)
+                global_idx += 1
+
+                print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
+                      f"本局 {len(samples):>3}样  "
+                      f"累计 {total_samples:>5}  "
+                      f"buffer {len(buffer):>6}  "
+                      f"score={score:+.3f}  {tag}",
+                      flush=True)
+        else:
+            # 对手池为空（首个 epoch）：用剩余额度做对称自对弈
+            extra_games = VS_POOL_NOWALL + VS_POOL_FULL
+            for i in range(extra_games):
+                samples = play_one_game(net, config)
+                buffer.push(samples)
+                total_samples += len(samples)
+                global_idx += 1
+
+                avg_r = sum(abs(s["value_target"]) for s in samples) / len(samples)
+                print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
+                      f"本局 {len(samples):>3}样  "
+                      f"累计 {total_samples:>5}  "
+                      f"buffer {len(buffer):>6}  "
+                      f"|r|={avg_r:.3f}  [vs-self]",
+                      flush=True)
 
         print(f"  [OK] 本轮 {total_samples} 样本, buffer 总大小 {len(buffer)}")
 
-        # ── 阶段 2: 网络训练 ──
+        # ── 训练 ──
         if len(buffer) >= min_buffer:
             net.train()
             sum_p_loss = 0.0
             sum_v_loss = 0.0
-            sum_abs_reward = 0.0
 
-            print(f"[2/3] 训练 {steps_per_epoch} 步...")
+            print(f"训练 {steps_per_epoch} 步...", flush=True)
             for step in range(steps_per_epoch):
                 batch = buffer.sample(config["batch_size"])
                 batch = {k: v.to(device) for k, v in batch.items()}
                 pl, vl = train_step(net, optimizer, batch)
                 sum_p_loss += pl
                 sum_v_loss += vl
-                sum_abs_reward += batch["values"].abs().mean().item()
 
                 if (step + 1) % max(1, steps_per_epoch // 5) == 0:
                     print(f"  step {step + 1:>3}/{steps_per_epoch}  "
-                          f"policy_loss={pl:.4f}  value_loss={vl:.4f}")
+                          f"policy_loss={pl:.4f}  value_loss={vl:.4f}",
+                          flush=True)
 
             print(f"  [OK] 平均 policy_loss={sum_p_loss / steps_per_epoch:.4f}, "
-                  f"value_loss={sum_v_loss / steps_per_epoch:.4f}, "
-                  f"avg_reward={sum_abs_reward / steps_per_epoch:.4f}")
+                  f"value_loss={sum_v_loss / steps_per_epoch:.4f}",
+                  flush=True)
         else:
-            print(f"[2/3] 跳过训练 (buffer {len(buffer)} < {min_buffer})")
+            print(f"跳过训练 (buffer {len(buffer)} < {min_buffer})")
 
-        # ── 阶段 3: 评估 ──
-        if epoch < config.get("eval_start_epoch", 3):
-            # 前几轮不评估，直接采用新模型
-            print("[3/3] 跳过评估（前 N 轮直接采用新模型）")
-            best_state_dict = copy.deepcopy(net.state_dict())
-            best_net.load_state_dict(best_state_dict)
+        # ── 更新对手池 ──
+        pool.add(copy.deepcopy(net.state_dict()))
+        print(f"  对手池大小: {len(pool)}")
 
-            os.makedirs(config["export_dir"], exist_ok=True)
-            export_path = os.path.join(config["export_dir"], config["export_name"])
-            export_weights(net, export_path)
-            print(f"  -> 直接采用新模型，权重已导出: {export_path}")
-        else:
-            print("[3/3] 评估...")
-            net.eval()
-            best_net.eval()
-            avg_score = evaluate(net, best_net, config)
-            print(f"  [OK] 新网络 vs 最佳网络 平均分: {avg_score:.3f}")
-
-            if avg_score >= config["eval_threshold"]:
-                print("  -> 新网络胜出，更新最佳模型 + 导出权重")
-                best_state_dict = copy.deepcopy(net.state_dict())
-                best_net.load_state_dict(best_state_dict)
-
-                os.makedirs(config["export_dir"], exist_ok=True)
-                export_path = os.path.join(config["export_dir"], config["export_name"])
-                export_weights(net, export_path)
-                print(f"  -> 权重已导出: {export_path}")
-            else:
-                print(f"  -> 未达到阈值 ({config['eval_threshold']:.3f})，保持当前最佳模型")
+        # ── 导出权重 ──
+        os.makedirs(config["export_dir"], exist_ok=True)
+        export_path = os.path.join(config["export_dir"], config["export_name"])
+        export_weights(net, export_path)
+        print(f"  权重已导出: {export_path}")
 
         # ── 保存 checkpoint ──
         ckpt_dir = os.path.join(config["export_dir"], "checkpoints")
         os.makedirs(ckpt_dir, exist_ok=True)
         ckpt_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
-        save_checkpoint(net, optimizer, epoch, best_state_dict, ckpt_path)
+        save_checkpoint(net, optimizer, epoch, buffer, pool, ckpt_path)
 
         # 学习率衰减
         scheduler.step()

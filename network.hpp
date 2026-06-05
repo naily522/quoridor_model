@@ -27,6 +27,7 @@
 #define NET_C 32       // conv_channels
 #define NET_PC 32      // policy_channels
 #define NET_VH 64      // value_hidden
+#define NET_IN_C 7     // input_channels (must match config.py)
 #define NET_H 9
 #define NET_W 9
 #endif
@@ -216,10 +217,10 @@ struct NetworkWeights {
 };
 
 // =============================================================================
-// 前向传播 — 输入编码后的 6×9×9 张量，输出 policy[225] 和 value
+// 前向传播 — 输入编码后的 7×9×9 张量，输出 policy[225] 和 value
 // =============================================================================
 inline void forward(const NetworkWeights& w,
-                     const float state[6][9][9],
+                     const float state[NET_IN_C][NET_H][NET_W],
                      float policy[225], float& value) {
     const int H = 9, W = 9, C = 32;
 
@@ -228,8 +229,8 @@ inline void forward(const NetworkWeights& w,
     float buf1[C * H * W];  // res_block temp
     float buf2[C * H * W];  // res_block out / final features
 
-    // ── conv_input: [6,9,9] → [32,9,9] ──
-    conv3x3(&state[0][0][0], 6, H, W,
+    // ── conv_input: [NET_IN_C,9,9] → [32,9,9] ──
+    conv3x3(&state[0][0][0], NET_IN_C, H, W,
             w.conv_input_w.data(), w.conv_input_b.data(), C,
             buf0);
     relu(buf0, C * H * W);

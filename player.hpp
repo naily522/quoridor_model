@@ -108,7 +108,7 @@ public:
         return weights.load(path);
     }
 
-    // ─── 局面编码 (6 通道 9×9, 与 encode.py 一致) ───
+    // ─── 局面编码 (7 通道 9×9, 与 encode.py 一致) ───
     void encode_state(const Quoridor::State& state) {
         std::memset(encoded, 0, sizeof(encoded));
 
@@ -143,6 +143,13 @@ public:
             for (int wc = 0; wc < 9; wc++)
                 if (state.v_wall[wr][wc])
                     encoded[5][wr][wc] = 1.0f;
+
+        // ch 6: BFS distance to goal (normalized by 18)
+        int d = min_distance_to_goal(state, state.turn);
+        float dist = (d >= 999) ? 1.0f : d / 18.0f;
+        for (int i = 0; i < 9; i++)
+            for (int j = 0; j < 9; j++)
+                encoded[6][i][j] = dist;
     }
 
     // ─── 动作索引解码 (0~224 → Action, 与 index_to_action 一致) ───
@@ -317,7 +324,7 @@ public:
 
 private:
     NetworkWeights weights;
-    float encoded[6][9][9];        // 编码后的输入张量
+    float encoded[7][9][9];        // 编码后的输入张量
     float raw_policy[ACTION_NUM];  // 网络原始策略输出
     float value;                   // 网络价值输出
     std::vector<float> action_probs;  // 掩码后的合法动作概率

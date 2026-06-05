@@ -25,8 +25,42 @@
 #   tensor = encode_state(state_dict)
 # =============================================================================
 import torch
+from collections import deque
 from quoridor_cpp import State, ROW_SIZE, COLUMN_SIZE
 from config import CONFIG
+
+
+def min_distance_to_goal(state: State, player: int) -> float:
+    """BFS 计算玩家到目标行的最短步数，绕开墙。不可达返回 inf。"""
+    start = state.get_pos(player)
+    target_row = 2 * ROW_SIZE - 1 if player == 1 else 1
+
+    if start[0] == target_row:
+        return 0.0
+
+    visited = [[False] * (2 * ROW_SIZE + 1) for _ in range(2 * ROW_SIZE + 1)]
+    q = deque()
+    q.append((start[0], start[1], 0))
+    visited[start[0]][start[1]] = True
+
+    while q:
+        r, c, d = q.popleft()
+        for dr, dc in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
+            nr, nc = r + dr, c + dc
+            if nr < 0 or nr > 2 * ROW_SIZE or nc < 0 or nc > 2 * ROW_SIZE:
+                continue
+            if nr % 2 == 0 or nc % 2 == 0:
+                continue
+            if state.get_cell(r + dr // 2, c + dc // 2):
+                continue
+            if visited[nr][nc]:
+                continue
+            if nr == target_row:
+                return d + 1
+            visited[nr][nc] = True
+            q.append((nr, nc, d + 1))
+    return float('inf')
+
 
 def encode_state(state: State) -> torch.Tensor:
     x = torch.zeros(CONFIG["input_channels"], ROW_SIZE, COLUMN_SIZE)
@@ -56,5 +90,12 @@ def encode_state(state: State) -> torch.Tensor:
         for wc in range(9):
             if state.get_v_wall(wr, wc):
                 x[5, wr, wc] = 1.0
+
+    # ch 6: BFS distance to goal (normalized by 18, max possible distance)
+    d = min_distance_to_goal(state, state.turn)
+    if d == float('inf'):
+        x[6, :, :] = 1.0
+    else:
+        x[6, :, :] = d / 18.0
 
     return x
