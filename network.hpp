@@ -146,7 +146,7 @@ inline void res_block(const float* input, int C, int H, int W,
 // =============================================================================
 struct NetworkWeights {
     // ── conv_input ──
-    std::vector<float> conv_input_w;   // [32, 6, 3, 3]
+    std::vector<float> conv_input_w;   // [32, NET_IN_C, 3, 3]
     std::vector<float> conv_input_b;   // [32]
 
     // ── 5× ResBlock ──
@@ -180,8 +180,8 @@ struct NetworkWeights {
         std::ifstream f(path, std::ios::binary);
         if (!f) { std::cerr << "[Network] Cannot open: " << path << "\n"; return false; }
 
-        // conv_input: [32,6,3,3] + [32]
-        read_floats(f, conv_input_w, 32 * 6 * 3 * 3);
+        // conv_input: [32,NET_IN_C,3,3] + [32]
+        read_floats(f, conv_input_w, 32 * NET_IN_C * 3 * 3);
         read_floats(f, conv_input_b, 32);
 
         // 5× ResBlock: each [32,32,3,3] + [32] × 2

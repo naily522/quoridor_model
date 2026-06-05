@@ -170,7 +170,7 @@ def export_weights(net: QuoridorNet, path: str) -> None:
     BatchNorm 会被融合到前一层 Conv2d 中，C++ 端无需 BN 实现。
     导出顺序（与 C++ NetworkWeights::load 严格对应）:
 
-      conv_input:  fused_weight[32,6,3,3], fused_bias[32]
+      conv_input:  fused_weight[32,input_channels,3,3], fused_bias[32]
       res_blocks × 5: (conv1_w, conv1_b, conv2_w, conv2_b) 各 [32,32,3,3], [32]
       policy_conv: fused_weight[32,32,3,3], fused_bias[32]
       policy_fc:   weight[225,2592], bias[225]
