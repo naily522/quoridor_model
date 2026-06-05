@@ -410,8 +410,19 @@ def play_one_game(net: torch.nn.Module,
             step += 1
 
     # ── 纯终局 value_target: 所有局面统一使用终局结果 ±1 ──
+    if not winner:
+        d1 = min_distance_to_goal(state, 1)
+        d2 = min_distance_to_goal(state, 2)
+        if d1 == float('inf') and d2 == float('inf'):
+            winner = 1
+        elif d1 == float('inf'):
+            winner = 2
+        elif d2 == float('inf'):
+            winner = 1
+        else:
+            winner = 1 if d1 <= d2 else 2
     for s in game_data:
-        s["value_target"] = 1.0 if winner == s["turn"] else -1.0 if winner else 0.0
+        s["value_target"] = 1.0 if winner == s["turn"] else -1.0
 
     return game_data
 
@@ -498,20 +509,22 @@ def play_vs_opponent_game(net: torch.nn.Module,
             step += 1
 
     # ── 得分与纯终局 value_target ──
-    d1 = min_distance_to_goal(state, 1)
-    d2 = min_distance_to_goal(state, 2)
-    if d1 == float('inf') and d2 == float('inf'):
-        end_shape = 0.0
-    else:
-        end_shape = max(-1.0, min(1.0, (d2 - d1) / 8.0))
+    if not winner:
+        d1 = min_distance_to_goal(state, 1)
+        d2 = min_distance_to_goal(state, 2)
+        if d1 == float('inf') and d2 == float('inf'):
+            winner = 1
+        elif d1 == float('inf'):
+            winner = 2
+        elif d2 == float('inf'):
+            winner = 1
+        else:
+            winner = 1 if d1 <= d2 else 2
 
     for s in game_data:
-        s["value_target"] = 1.0 if winner == s["turn"] else -1.0 if winner else 0.0
+        s["value_target"] = 1.0 if winner == s["turn"] else -1.0
 
     # 得分: 终局结果从 net 视角
-    if net_plays_as == 1:
-        score = 1.0 if winner == 1 else (-1.0 if winner == 2 else end_shape)
-    else:
-        score = 1.0 if winner == 2 else (-1.0 if winner == 1 else -end_shape)
+    score = 1.0 if net_plays_as == winner else -1.0
 
     return game_data, score

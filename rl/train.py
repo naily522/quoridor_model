@@ -233,12 +233,13 @@ def main():
             total_samples += len(samples)
             global_idx += 1
 
-            avg_r = sum(abs(s["value_target"]) for s in samples) / len(samples)
+            first = samples[0]
+            won_by = first["turn"] if first["value_target"] > 0 else (3 - first["turn"])
             print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
-                  f"本局 {len(samples):>3}样  "
+                  f"本局 {len(samples):>3}步  "
                   f"累计 {total_samples:>5}  "
                   f"buffer {len(buffer):>6}  "
-                  f"|r|={avg_r:.3f}  [vs-self]",
+                  f"P{won_by}胜  [vs-self]",
                   flush=True)
 
         # ── 阶段 2: 对手池对战 ──
@@ -303,12 +304,13 @@ def main():
                 total_samples += len(samples)
                 global_idx += 1
 
-                avg_r = sum(abs(s["value_target"]) for s in samples) / len(samples)
+                first = samples[0]
+                won_by = first["turn"] if first["value_target"] > 0 else (3 - first["turn"])
                 print(f"  对局 {global_idx:>3}/{GAMES_PER_EPOCH}  "
-                      f"本局 {len(samples):>3}样  "
+                      f"本局 {len(samples):>3}步  "
                       f"累计 {total_samples:>5}  "
                       f"buffer {len(buffer):>6}  "
-                      f"|r|={avg_r:.3f}  [vs-self]",
+                      f"P{won_by}胜  [vs-self]",
                       flush=True)
 
         print(f"  [OK] 本轮 {total_samples} 样本, buffer 总大小 {len(buffer)}")
