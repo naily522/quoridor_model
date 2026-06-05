@@ -384,7 +384,7 @@ def play_one_game(net: torch.nn.Module,
         if winner:
             break
 
-        # 温度调度: 前 temperature_steps 步用 config 温度，之后用 temperature_min
+        # 温度调度
         temp_override = config["temperature"]
         if step >= config["temperature_steps"]:
             temp_override = config["temperature_min"]
@@ -394,15 +394,25 @@ def play_one_game(net: torch.nn.Module,
 
         pi = mcts_search(state, net, search_config, no_wall_player=no_wall_player)
 
+        # 当前局面的距离 shaping（当前玩家视角）
+        cur = state.turn
+        d_self = min_distance_to_goal(state, cur)
+        d_opp  = min_distance_to_goal(state, 3 - cur)
+        if d_self == float('inf') and d_opp == float('inf'):
+            step_shape = 0.0
+        else:
+            step_shape = max(-1.0, min(1.0, (d_opp - d_self) / 8.0))
+
         sample = {
             "encoded_state":  encode_state(state).cpu().numpy(),
             "policy_target":  pi.astype(np.float32),
             "value_target":   0.0,
             "turn":           state.turn,
+            "step_shape":     step_shape,     # 每步独立 shaping
         }
         game_data.append(sample)
 
-        # 按 π 采样落子 (只用合法动作)
+        # 按 π 采样落子
         legal = _filter_legal(get_legal_actions(state), state, no_wall_player)
         action_idx = np.random.choice(config["num_actions"], p=pi)
         action = None
@@ -414,23 +424,16 @@ def play_one_game(net: torch.nn.Module,
             step += 1
 
     # ── 终局: 回溯 value_target ──
-    d1 = min_distance_to_goal(state, 1)
-    d2 = min_distance_to_goal(state, 2)
-    if d1 == float('inf') and d2 == float('inf'):
-        shape = 0.0
-    else:
-        shape = max(-1.0, min(1.0, (d2 - d1) / 8.0))
-
-    terminal = (1.0 if winner == 1 else -1.0) if winner else 0.0
-    if winner:
-        tw = config.get("terminal_value_weight", 0.7)
-        sw = config.get("shape_value_weight", 0.3)
-        value_p1 = tw * terminal + sw * shape
-    else:
-        value_p1 = shape
-
+    # 每步独立 step_shape 与终端结果加权
+    tw = config.get("terminal_value_weight", 0.7)
+    sw = config.get("shape_value_weight", 0.3)
     for s in game_data:
-        s["value_target"] = value_p1 if s["turn"] == 1 else -value_p1
+        if s["turn"] == 1:
+            terminal = (1.0 if winner == 1 else -1.0) if winner else 0.0
+            s["value_target"] = tw * terminal + sw * s["step_shape"] if winner else s["step_shape"]
+        else:
+            terminal = (1.0 if winner == 2 else -1.0) if winner else 0.0
+            s["value_target"] = tw * terminal + sw * s["step_shape"] if winner else s["step_shape"]
 
     return game_data
 
@@ -487,17 +490,27 @@ def play_vs_opponent_game(net: torch.nn.Module,
 
         # 只收集新网络的样本
         if is_net_turn:
+            # 当前局面的距离 shaping（当前玩家视角）
+            cur = state.turn
+            d_self = min_distance_to_goal(state, cur)
+            d_opp  = min_distance_to_goal(state, 3 - cur)
+            if d_self == float('inf') and d_opp == float('inf'):
+                step_shape = 0.0
+            else:
+                step_shape = max(-1.0, min(1.0, (d_opp - d_self) / 8.0))
+
             sample = {
                 "encoded_state":  encode_state(state).cpu().numpy(),
                 "policy_target":  pi.astype(np.float32),
                 "value_target":   0.0,
                 "turn":           state.turn,
+                "step_shape":     step_shape,
             }
             game_data.append(sample)
 
         # 采样并落子
         legal = _filter_legal(get_legal_actions(state), state, nw)
-        action_idx = int(pi.argmax())  # temperature=0 时 argmax
+        action_idx = int(pi.argmax())
         action = None
         for a in legal:
             if action_to_index(a) == action_idx:
@@ -506,31 +519,25 @@ def play_vs_opponent_game(net: torch.nn.Module,
         if action.apply(state):
             step += 1
 
-    # ── 得分与 value_target: 复用 play_one_game 逻辑，从 P1 视角→翻转为 net 视角 ──
+    # ── 得分与 value_target: 每步独立 step_shape + 终端加权 ──
     d1 = min_distance_to_goal(state, 1)
     d2 = min_distance_to_goal(state, 2)
     if d1 == float('inf') and d2 == float('inf'):
-        shape = 0.0
+        end_shape = 0.0
     else:
-        shape = max(-1.0, min(1.0, (d2 - d1) / 8.0))
+        end_shape = max(-1.0, min(1.0, (d2 - d1) / 8.0))
 
-    terminal = (1.0 if winner == 1 else -1.0) if winner else 0.0
     tw = config.get("terminal_value_weight", 0.7)
     sw = config.get("shape_value_weight", 0.3)
-    if winner:
-        value_p1 = tw * terminal + sw * shape
-    else:
-        value_p1 = shape
-
-    # 翻转为 net 视角
-    if net_plays_as == 1:
-        value_net = value_p1
-        score = 1.0 if winner == 1 else (-1.0 if winner == 2 else shape)
-    else:
-        value_net = -value_p1
-        score = 1.0 if winner == 2 else (-1.0 if winner == 1 else -shape)
-
     for s in game_data:
-        s["value_target"] = value_net    # 样本全部是 net 的回合
+        # terminal 从样本所属玩家视角
+        term = (1.0 if winner == s["turn"] else -1.0) if winner else 0.0
+        s["value_target"] = tw * term + sw * s["step_shape"] if winner else s["step_shape"]
+
+    # 得分: 终局结果从 net 视角
+    if net_plays_as == 1:
+        score = 1.0 if winner == 1 else (-1.0 if winner == 2 else end_shape)
+    else:
+        score = 1.0 if winner == 2 else (-1.0 if winner == 1 else -end_shape)
 
     return game_data, score
