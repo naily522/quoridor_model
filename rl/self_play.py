@@ -392,27 +392,14 @@ def play_one_game(net: torch.nn.Module,
         search_config = dict(config)
         search_config["temperature"] = temp_override
 
+        # 落子前距离（当前玩家视角）
+        cur = state.turn
+        pre_d_self = min_distance_to_goal(state, cur)
+        pre_d_opp  = min_distance_to_goal(state, 3 - cur)
+
         pi = mcts_search(state, net, search_config, no_wall_player=no_wall_player)
 
-        # 当前局面的距离 shaping（当前玩家视角）
-        cur = state.turn
-        d_self = min_distance_to_goal(state, cur)
-        d_opp  = min_distance_to_goal(state, 3 - cur)
-        if d_self == float('inf') and d_opp == float('inf'):
-            step_shape = 0.0
-        else:
-            step_shape = max(-1.0, min(1.0, (d_opp - d_self) / 8.0))
-
-        sample = {
-            "encoded_state":  encode_state(state).cpu().numpy(),
-            "policy_target":  pi.astype(np.float32),
-            "value_target":   0.0,
-            "turn":           state.turn,
-            "step_shape":     step_shape,     # 每步独立 shaping
-        }
-        game_data.append(sample)
-
-        # 按 π 采样落子
+        # 采样并落子
         legal = _filter_legal(get_legal_actions(state), state, no_wall_player)
         action_idx = np.random.choice(config["num_actions"], p=pi)
         action = None
@@ -420,20 +407,55 @@ def play_one_game(net: torch.nn.Module,
             if action_to_index(a) == action_idx:
                 action = a
                 break
-        if action.apply(state):
+        was_wall = action.is_wall if action else False
+        ok = action.apply(state) if action else False
+
+        # 落子后对手距离（用于放墙 bonus）
+        mover = cur
+        if ok:
+            post_d_opp = min_distance_to_goal(state, 3 - mover)
+        else:
+            post_d_opp = pre_d_opp
+
+        # 基础 shaping: 落子前局面评估（当前玩家视角）
+        if pre_d_self == float('inf') and pre_d_opp == float('inf'):
+            step_shape = 0.0
+        else:
+            step_shape = max(-1.0, min(1.0, (pre_d_opp - pre_d_self) / 8.0))
+
+        # 放墙 bonus: 对手距离增加了多少（只奖不罚）
+        wall_bonus = 0.0
+        if was_wall and ok:
+            opp_dist_increase = post_d_opp - pre_d_opp
+            if opp_dist_increase > 0 and pre_d_opp != float('inf') and post_d_opp != float('inf'):
+                wall_bonus = min(1.0, opp_dist_increase / 8.0)
+
+        ww = config.get("wall_reward_weight", 0.1)
+        step_reward = step_shape + ww * wall_bonus
+
+        sample = {
+            "encoded_state":  encode_state(state).cpu().numpy(),
+            "policy_target":  pi.astype(np.float32),
+            "value_target":   0.0,
+            "turn":           mover,
+            "step_reward":    step_reward,
+        }
+        game_data.append(sample)
+
+        if ok:
             step += 1
 
     # ── 终局: 回溯 value_target ──
-    # 每步独立 step_shape 与终端结果加权
+    # 每步独立 step_reward 与终端结果加权
     tw = config.get("terminal_value_weight", 0.7)
     sw = config.get("shape_value_weight", 0.3)
     for s in game_data:
         if s["turn"] == 1:
             terminal = (1.0 if winner == 1 else -1.0) if winner else 0.0
-            s["value_target"] = tw * terminal + sw * s["step_shape"] if winner else s["step_shape"]
+            s["value_target"] = tw * terminal + sw * s["step_reward"] if winner else s["step_reward"]
         else:
             terminal = (1.0 if winner == 2 else -1.0) if winner else 0.0
-            s["value_target"] = tw * terminal + sw * s["step_shape"] if winner else s["step_shape"]
+            s["value_target"] = tw * terminal + sw * s["step_reward"] if winner else s["step_reward"]
 
     return game_data
 
@@ -486,27 +508,13 @@ def play_vs_opponent_game(net: torch.nn.Module,
         elif no_wall_opp and not is_net_turn:
             nw = state.turn
 
-        pi = mcts_search(state, cur_net, eval_config, no_wall_player=nw)
-
-        # 只收集新网络的样本
+        # 落子前距离（只用 net 回合）
         if is_net_turn:
-            # 当前局面的距离 shaping（当前玩家视角）
             cur = state.turn
-            d_self = min_distance_to_goal(state, cur)
-            d_opp  = min_distance_to_goal(state, 3 - cur)
-            if d_self == float('inf') and d_opp == float('inf'):
-                step_shape = 0.0
-            else:
-                step_shape = max(-1.0, min(1.0, (d_opp - d_self) / 8.0))
+            pre_d_self = min_distance_to_goal(state, cur)
+            pre_d_opp  = min_distance_to_goal(state, 3 - cur)
 
-            sample = {
-                "encoded_state":  encode_state(state).cpu().numpy(),
-                "policy_target":  pi.astype(np.float32),
-                "value_target":   0.0,
-                "turn":           state.turn,
-                "step_shape":     step_shape,
-            }
-            game_data.append(sample)
+        pi = mcts_search(state, cur_net, eval_config, no_wall_player=nw)
 
         # 采样并落子
         legal = _filter_legal(get_legal_actions(state), state, nw)
@@ -516,10 +524,46 @@ def play_vs_opponent_game(net: torch.nn.Module,
             if action_to_index(a) == action_idx:
                 action = a
                 break
-        if action.apply(state):
+        was_wall = action.is_wall if action else False
+        ok = action.apply(state) if action else False
+
+        # 只收集新网络的样本
+        if is_net_turn:
+            mover = cur
+            if ok:
+                post_d_opp = min_distance_to_goal(state, 3 - mover)
+            else:
+                post_d_opp = pre_d_opp
+
+            # 基础 shaping: 落子前局面
+            if pre_d_self == float('inf') and pre_d_opp == float('inf'):
+                step_shape = 0.0
+            else:
+                step_shape = max(-1.0, min(1.0, (pre_d_opp - pre_d_self) / 8.0))
+
+            # 放墙 bonus
+            wall_bonus = 0.0
+            if was_wall and ok:
+                opp_dist_increase = post_d_opp - pre_d_opp
+                if opp_dist_increase > 0 and pre_d_opp != float('inf') and post_d_opp != float('inf'):
+                    wall_bonus = min(1.0, opp_dist_increase / 8.0)
+
+            ww = config.get("wall_reward_weight", 0.1)
+            step_reward = step_shape + ww * wall_bonus
+
+            sample = {
+                "encoded_state":  encode_state(state).cpu().numpy(),
+                "policy_target":  pi.astype(np.float32),
+                "value_target":   0.0,
+                "turn":           mover,
+                "step_reward":    step_reward,
+            }
+            game_data.append(sample)
+
+        if ok:
             step += 1
 
-    # ── 得分与 value_target: 每步独立 step_shape + 终端加权 ──
+    # ── 得分与 value_target: 每步独立 step_reward + 终端加权 ──
     d1 = min_distance_to_goal(state, 1)
     d2 = min_distance_to_goal(state, 2)
     if d1 == float('inf') and d2 == float('inf'):
@@ -530,9 +574,8 @@ def play_vs_opponent_game(net: torch.nn.Module,
     tw = config.get("terminal_value_weight", 0.7)
     sw = config.get("shape_value_weight", 0.3)
     for s in game_data:
-        # terminal 从样本所属玩家视角
         term = (1.0 if winner == s["turn"] else -1.0) if winner else 0.0
-        s["value_target"] = tw * term + sw * s["step_shape"] if winner else s["step_shape"]
+        s["value_target"] = tw * term + sw * s["step_reward"] if winner else s["step_reward"]
 
     # 得分: 终局结果从 net 视角
     if net_plays_as == 1:
