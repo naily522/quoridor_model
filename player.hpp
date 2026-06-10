@@ -108,48 +108,45 @@ public:
         return weights.load(path);
     }
 
-    // ─── 局面编码 (7 通道 9×9, 与 encode.py 一致) ───
+    // ─── 局面编码 (7 通道 9×9, 绝对编码, 与 encode.py 一致) ───
     void encode_state(const Quoridor::State& state) {
         std::memset(encoded, 0, sizeof(encoded));
 
-        // ch 0: current player position
-        auto my = state.pos[state.turn - 1];
-        encoded[0][my.first / 2][my.second / 2] = 1.0f;
+        // ch 0: Player 1 position (absolute, one-hot)
+        encoded[0][state.pos[0].first / 2][state.pos[0].second / 2] = 1.0f;
 
-        // ch 1: opponent position
-        auto opp = state.pos[2 - state.turn];
-        encoded[1][opp.first / 2][opp.second / 2] = 1.0f;
+        // ch 1: Player 2 position (absolute, one-hot)
+        encoded[1][state.pos[1].first / 2][state.pos[1].second / 2] = 1.0f;
 
-        // ch 2: current player's remaining walls
-        float my_walls = state.wall_num[state.turn - 1] / 10.0f;
+        // ch 2: Player 1's remaining walls (broadcast, normalized)
+        float p1_walls = state.wall_num[0] / 10.0f;
         for (int i = 0; i < 9; i++)
             for (int j = 0; j < 9; j++)
-                encoded[2][i][j] = my_walls;
+                encoded[2][i][j] = p1_walls;
 
-        // ch 3: opponent's remaining walls
-        float opp_walls = state.wall_num[2 - state.turn] / 10.0f;
+        // ch 3: Player 2's remaining walls (broadcast, normalized)
+        float p2_walls = state.wall_num[1] / 10.0f;
         for (int i = 0; i < 9; i++)
             for (int j = 0; j < 9; j++)
-                encoded[3][i][j] = opp_walls;
+                encoded[3][i][j] = p2_walls;
 
-        // ch 4: horizontal walls
+        // ch 4: horizontal walls (absolute)
         for (int wr = 0; wr < 9; wr++)
             for (int wc = 0; wc < 9; wc++)
                 if (state.h_wall[wr][wc])
                     encoded[4][wr][wc] = 1.0f;
 
-        // ch 5: vertical walls
+        // ch 5: vertical walls (absolute)
         for (int wr = 0; wr < 9; wr++)
             for (int wc = 0; wc < 9; wc++)
                 if (state.v_wall[wr][wc])
                     encoded[5][wr][wc] = 1.0f;
 
-        // ch 6: BFS distance to goal (normalized by 18)
-        int d = min_distance_to_goal(state, state.turn);
-        float dist = (d >= 999) ? 1.0f : d / 18.0f;
+        // ch 6: turn indicator (broadcast, breaks symmetry)
+        float turn_flag = (state.turn == 1) ? 1.0f : 0.0f;
         for (int i = 0; i < 9; i++)
             for (int j = 0; j < 9; j++)
-                encoded[6][i][j] = dist;
+                encoded[6][i][j] = turn_flag;
     }
 
     // ─── 动作索引解码 (0~224 → Action, 与 index_to_action 一致) ───
@@ -305,6 +302,14 @@ public:
         return cached_action;
     }
 
+    // ─── 状态评估 (供 1-ply 搜索使用) ───
+    // 对任意局面做前向传播，返回当前玩家视角的 value
+    float evaluate_state(const Quoridor::State& state) {
+        encode_state(state);
+        forward(weights, encoded, raw_policy, value);
+        return value;
+    }
+
     // 获取调试信息
     float get_value() const { return value; }
     const std::vector<float>& get_probs() const { return action_probs; }
@@ -324,7 +329,7 @@ public:
 
 private:
     NetworkWeights weights;
-    float encoded[7][9][9];        // 编码后的输入张量
+    float encoded[7][9][9];        // 编码后的输入张量 (v2: absolute, 7ch)
     float raw_policy[ACTION_NUM];  // 网络原始策略输出
     float value;                   // 网络价值输出
     std::vector<float> action_probs;  // 掩码后的合法动作概率

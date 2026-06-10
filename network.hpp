@@ -22,12 +22,12 @@
 // C++ 端只做 Conv2d → ReLU → Conv2d → ... → FC → Softmax/Tanh。
 // =============================================================================
 
-// ─── 网络结构常量 (可选覆盖，默认与 Quoridor 一致) ───
+// ─── 网络结构常量 (必须与 config.py / model.py 保持严格一致) ───
 #ifndef NET_C
-#define NET_C 32       // conv_channels
+#define NET_C 64       // conv_channels (v3)
 #define NET_PC 32      // policy_channels
-#define NET_VH 64      // value_hidden
-#define NET_IN_C 7     // input_channels (must match config.py)
+#define NET_VH 128     // value_hidden (v3)
+#define NET_RES 8      // res_blocks (v3)
 #define NET_H 9
 #define NET_W 9
 #endif
@@ -145,16 +145,16 @@ inline void res_block(const float* input, int C, int H, int W,
 // NetworkWeights — 加载和存储所有网络参数
 // =============================================================================
 struct NetworkWeights {
-    // ── conv_input ──
-    std::vector<float> conv_input_w;   // [32, NET_IN_C, 3, 3]
+    // ── conv_input (7 input channels: absolute encoding) ──
+    std::vector<float> conv_input_w;   // [32, 7, 3, 3]
     std::vector<float> conv_input_b;   // [32]
 
-    // ── 5× ResBlock ──
+    // ── N× ResBlock (NET_RES = 8, 与 config.py 一致) ──
     struct RB {
-        std::vector<float> w1, b1;     // [32,32,3,3], [32]
-        std::vector<float> w2, b2;     // [32,32,3,3], [32]
+        std::vector<float> w1, b1;     // [NET_C, NET_C, 3, 3], [NET_C]
+        std::vector<float> w2, b2;     // [NET_C, NET_C, 3, 3], [NET_C]
     };
-    RB res[5];
+    RB res[NET_RES];
 
     // ── policy head ──
     std::vector<float> policy_conv_w;  // [32,32,3,3]
@@ -180,33 +180,33 @@ struct NetworkWeights {
         std::ifstream f(path, std::ios::binary);
         if (!f) { std::cerr << "[Network] Cannot open: " << path << "\n"; return false; }
 
-        // conv_input: [32,NET_IN_C,3,3] + [32]
-        read_floats(f, conv_input_w, 32 * NET_IN_C * 3 * 3);
-        read_floats(f, conv_input_b, 32);
+        // conv_input: [NET_C, 7, 3, 3] + [NET_C]
+        read_floats(f, conv_input_w, NET_C * 7 * 3 * 3);
+        read_floats(f, conv_input_b, NET_C);
 
-        // 5× ResBlock: each [32,32,3,3] + [32] × 2
-        for (int i = 0; i < 5; i++) {
-            read_floats(f, res[i].w1, 32 * 32 * 3 * 3);
-            read_floats(f, res[i].b1, 32);
-            read_floats(f, res[i].w2, 32 * 32 * 3 * 3);
-            read_floats(f, res[i].b2, 32);
+        // NET_RES× ResBlock: each [NET_C, NET_C, 3, 3] + [NET_C] × 2
+        for (int i = 0; i < NET_RES; i++) {
+            read_floats(f, res[i].w1, NET_C * NET_C * 3 * 3);
+            read_floats(f, res[i].b1, NET_C);
+            read_floats(f, res[i].w2, NET_C * NET_C * 3 * 3);
+            read_floats(f, res[i].b2, NET_C);
         }
 
-        // policy_conv: [32,32,3,3] + [32]
-        read_floats(f, policy_conv_w, 32 * 32 * 3 * 3);
-        read_floats(f, policy_conv_b, 32);
-        // policy_fc: [225, 2592] + [225]
-        read_floats(f, policy_fc_w, 225 * 2592);
+        // policy_conv: [NET_PC, NET_C, 3, 3] + [NET_PC]
+        read_floats(f, policy_conv_w, NET_PC * NET_C * 3 * 3);
+        read_floats(f, policy_conv_b, NET_PC);
+        // policy_fc: [225, NET_PC * 9 * 9] + [225]
+        read_floats(f, policy_fc_w, 225 * NET_PC * NET_H * NET_W);
         read_floats(f, policy_fc_b, 225);
 
-        // value_conv: [1,32,1,1] + [1]
-        read_floats(f, value_conv_w, 1 * 32 * 1 * 1);
+        // value_conv: [1, NET_C, 1, 1] + [1]
+        read_floats(f, value_conv_w, 1 * NET_C * 1 * 1);
         read_floats(f, value_conv_b, 1);
-        // value_fc0: [64, 81] + [64]
-        read_floats(f, value_fc0_w, 64 * 81);
-        read_floats(f, value_fc0_b, 64);
-        // value_fc2: [1, 64] + [1]
-        read_floats(f, value_fc2_w, 1 * 64);
+        // value_fc0: [NET_VH, NET_H * NET_W] + [NET_VH]
+        read_floats(f, value_fc0_w, NET_VH * NET_H * NET_W);
+        read_floats(f, value_fc0_b, NET_VH);
+        // value_fc2: [1, NET_VH] + [1]
+        read_floats(f, value_fc2_w, 1 * NET_VH);
         read_floats(f, value_fc2_b, 1);
 
         bool ok = f.good();
@@ -217,41 +217,39 @@ struct NetworkWeights {
 };
 
 // =============================================================================
-// 前向传播 — 输入编码后的 7×9×9 张量，输出 policy[225] 和 value
+// 前向传播 — 输入编码后的 6×9×9 张量，输出 policy[225] 和 value
 // =============================================================================
 inline void forward(const NetworkWeights& w,
-                     const float state[NET_IN_C][NET_H][NET_W],
+                     const float state[7][9][9],
                      float policy[225], float& value) {
-    const int H = 9, W = 9, C = 32;
+    const int H = NET_H, W = NET_W, C = NET_C;
 
     // 工作缓冲区 (all allocated on stack for small size)
     float buf0[C * H * W];  // conv_input out
     float buf1[C * H * W];  // res_block temp
     float buf2[C * H * W];  // res_block out / final features
 
-    // ── conv_input: [NET_IN_C,9,9] → [32,9,9] ──
-    conv3x3(&state[0][0][0], NET_IN_C, H, W,
+    // ── conv_input: [7,9,9] → [NET_C,9,9] ──
+    conv3x3(&state[0][0][0], 7, H, W,
             w.conv_input_w.data(), w.conv_input_b.data(), C,
             buf0);
     relu(buf0, C * H * W);
 
-    // ── 5× ResBlock ──
-    // 每块: input → buf0, 实际在 buf0/buf2 间交替
+    // ── NET_RES× ResBlock ──
     const float* res_in = buf0;
     float* res_buf = buf1;
     float* res_out = buf2;
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < NET_RES; i++) {
         res_block(res_in, C, H, W,
                   w.res[i].w1.data(), w.res[i].b1.data(),
                   w.res[i].w2.data(), w.res[i].b2.data(),
                   res_buf, res_out);
         // 下一轮: 输出作为输入
-        if (i < 4) {
+        if (i < NET_RES - 1) {
             const float* tmp = res_in;
             res_in = res_out;
-            res_out = const_cast<float*>(tmp); // 交替使用缓冲区
-            // 重置 res_buf
+            res_out = const_cast<float*>(tmp);
             float* tmp_buf = res_buf;
             res_buf = res_out;
             res_out = tmp_buf;
@@ -259,14 +257,14 @@ inline void forward(const NetworkWeights& w,
     }
 
     // ── policy head ──
-    float p_conv_out[32 * H * W];
+    float p_conv_out[NET_PC * H * W];
     conv3x3(res_out, C, H, W,
-            w.policy_conv_w.data(), w.policy_conv_b.data(), 32,
+            w.policy_conv_w.data(), w.policy_conv_b.data(), NET_PC,
             p_conv_out);
-    relu(p_conv_out, 32 * H * W);
+    relu(p_conv_out, NET_PC * H * W);
 
-    // policy_fc: [2592] → [225]
-    fc(p_conv_out, 32 * H * W,
+    // policy_fc: [NET_PC * H * W] → [225]
+    fc(p_conv_out, NET_PC * H * W,
        w.policy_fc_w.data(), w.policy_fc_b.data(), 225,
        policy);
     softmax(policy, 225);
@@ -278,15 +276,15 @@ inline void forward(const NetworkWeights& w,
             v_conv_out);
     relu(v_conv_out, 1 * H * W);
 
-    // value_fc: [81] → [64] → [1]
-    float v_hidden[64];
+    // value_fc: [81] → [NET_VH] → [1]
+    float v_hidden[NET_VH];
     fc(v_conv_out, H * W,
-       w.value_fc0_w.data(), w.value_fc0_b.data(), 64,
+       w.value_fc0_w.data(), w.value_fc0_b.data(), NET_VH,
        v_hidden);
-    relu(v_hidden, 64);
+    relu(v_hidden, NET_VH);
 
     float v_raw[1];
-    fc(v_hidden, 64,
+    fc(v_hidden, NET_VH,
        w.value_fc2_w.data(), w.value_fc2_b.data(), 1,
        v_raw);
     tanh_(v_raw, 1);

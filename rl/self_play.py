@@ -173,26 +173,18 @@ class MCTSNode:
 # MCTS 搜索
 # =============================================================================
 
-def _filter_legal(actions, state, no_wall_player):
-    """如果当前轮到 no_wall_player，过滤掉放墙动作。"""
-    if no_wall_player is not None and state.turn == no_wall_player:
-        return [a for a in actions if not a.is_wall]
-    return actions
-
-
 def mcts_search(state: State, net: torch.nn.Module,
-                config: dict | None = None,
-                no_wall_player: int | None = None) -> np.ndarray:
+                config: dict | None = None) -> tuple[np.ndarray, float]:
     """在当前局面运行 MCTS 搜索。
 
     参数:
-        state:          当前棋盘状态
-        net:            策略-价值网络 (QuoridorNet)
-        config:         超参数字典 (默认使用 CONFIG)
-        no_wall_player: 被禁止放墙的玩家编号 (1 或 2), None=双方均可放墙
+        state:  当前棋盘状态
+        net:    策略-价值网络 (QuoridorNet)
+        config: 超参数字典 (默认使用 CONFIG)
 
     返回:
-        π: 长度为 225 的动作概率分布 (visit count 归一化)
+        (π, root_value): 动作概率分布 (visit count 归一化) 和根节点 Q 值
+        root_value 从当前玩家视角，综合了 MCTS 搜索结果 + 距离 shaping
     """
     if config is None:
         config = CONFIG
@@ -207,14 +199,37 @@ def mcts_search(state: State, net: torch.nn.Module,
     device = next(net.parameters()).device
 
     # ── 获取合法动作 ──
-    legal_actions = _filter_legal(get_legal_actions(state), state, no_wall_player)
+    legal_actions = get_legal_actions(state)
+
+    # 课程学习: 如 _force_moves_only 标记为 True，只保留移动动作
+    if config.get("_force_moves_only", False):
+        legal_actions = [a for a in legal_actions if not a.is_wall]
+
+    if len(legal_actions) == 0:
+        # 极端情况: 无合法移动 → 允许放墙
+        legal_actions = get_legal_actions(state)
+    if len(legal_actions) == 0:
+        # 极端情况: 无任何合法动作 → 返回均匀分布 + 0 价值
+        pi = np.ones(num_actions) / num_actions
+        return pi, 0.0
     if len(legal_actions) == 1:
         pi = np.zeros(num_actions)
         pi[action_to_index(legal_actions[0])] = 1.0
-        return pi
-
-    # 动态调整搜索次数: 动作少时无需过多模拟
-    sims = min(config["mcts_simulations"], max(80, len(legal_actions) * 15))
+        # 唯一合法动作: 用网络快速评估该后继状态的价值
+        only_a = legal_actions[0]
+        temp_state = state.copy()
+        if only_a.apply(temp_state):
+            winner_temp = check_terminal(temp_state)
+            if winner_temp:
+                root_val = 1.0 if winner_temp == state.turn else -1.0
+            else:
+                st = encode_state(temp_state).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    _, vt = net(st)
+                root_val = float(vt.item())
+        else:
+            root_val = 0.0
+        return pi, root_val
 
     # ── 根节点网络评估 ──
     state_tensor = encode_state(state).unsqueeze(0).to(device)  # [1, 6, 9, 9]
@@ -261,8 +276,7 @@ def mcts_search(state: State, net: torch.nn.Module,
             sqrt_n = math.sqrt(node.visit_count + 1)
 
             for idx, child in node.children.items():
-                # Q(parent, action) = -V(child)  子节点是对手方视角，需翻转
-                q = -child.value
+                q = -child.value  # 取反: 子节点是对手视角, 父节点选对己方最有利的
                 u = c_puct * child.prior_p * sqrt_n / (1 + child.visit_count)
                 score = q + u
                 if score > best_score:
@@ -288,9 +302,29 @@ def mcts_search(state: State, net: torch.nn.Module,
                 leaf_policy, leaf_value_t = net(leaf_tensor)
             leaf_value = float(leaf_value_t.item())
 
+            # 距离引导奖励: 用双方最短距离差做 shaping
+            # (d2 - d1) / 8 始终是 P1 视角 (正值=P1优势, 负值=P2优势)
+            # leaf_value 是当前轮到玩家的视角，需要为 P2 翻转符号
+            bonus_w = config.get("goal_bonus_weight", 0.0)
+            if bonus_w > 0:
+                d1 = min_distance_to_goal(node.state, 1)
+                d2 = min_distance_to_goal(node.state, 2)
+                if d1 != float('inf') or d2 != float('inf'):
+                    if d1 == float('inf') or d2 == float('inf'):
+                        distance_score = 0.0
+                    else:
+                        # P1 视角的得分
+                        score_p1 = max(-1.0, min(1.0, (d2 - d1) / 8.0))
+                        # 转换为当前玩家视角
+                        distance_score = score_p1 if node.state.turn == 1 else -score_p1
+                    leaf_value += bonus_w * distance_score
+
             # 扩展叶子
-            legal = _filter_legal(get_legal_actions(node.state),
-                                 node.state, no_wall_player)
+            legal = get_legal_actions(node.state)
+            if config.get("_force_moves_only", False):
+                legal = [a for a in legal if not a.is_wall]
+                if not legal:
+                    legal = get_legal_actions(node.state)
             if legal:
                 lp = leaf_policy.squeeze(0).cpu().numpy()
                 masked_lp = np.zeros(num_actions)
@@ -338,7 +372,7 @@ def mcts_search(state: State, net: torch.nn.Module,
     for i, (idx, _) in enumerate(root.children.items()):
         pi[idx] = visits[i]
 
-    return pi
+    return pi, root.value
 
 
 # =============================================================================
@@ -347,16 +381,19 @@ def mcts_search(state: State, net: torch.nn.Module,
 
 def play_one_game(net: torch.nn.Module,
                   config: dict | None = None,
-                  no_wall_player: int | None = None) -> list[dict]:
-    """用当前网络完成一局自对弈，返回训练样本。
+                  wall_prob: float = 1.0,
+                  opponent_net: torch.nn.Module | None = None) -> list[dict]:
+    """用当前网络完成一局对弈（自对弈或 vs 历史对手），返回训练样本。
 
-    每步记录 (state_encoding, π, player)，终局后填入 value_target。
-    样本中的 value_target 从**当前玩家视角**出发 (+1 赢 / -1 输)。
+    当 opponent_net=None 时为标准自对弈（双方用同一网络）;
+    当 opponent_net 不为 None 时，对手方用 opponent_net 的 MCTS 决策，
+    这提供了训练数据的多样性，防止策略坍缩到单一自我风格。
 
     参数:
-        net:            策略-价值网络，双方共用
-        config:         超参数字典
-        no_wall_player: 被禁止放墙的玩家 (1 或 2), None=双方均可
+        net:          当前策略-价值网络
+        config:       超参数字典
+        wall_prob:    课程学习: 每步允许放墙的概率
+        opponent_net: 对手网络 (None=自对弈, 否则 vs 历史对手)
 
     返回:
         [ {encoded_state, policy_target, value_target, turn}, ... ]
@@ -375,7 +412,6 @@ def play_one_game(net: torch.nn.Module,
         if winner:
             break
 
-        # 温度调度
         temp_override = config["temperature"]
         if step >= config["temperature_steps"]:
             temp_override = config["temperature_min"]
@@ -383,149 +419,107 @@ def play_one_game(net: torch.nn.Module,
         search_config = dict(config)
         search_config["temperature"] = temp_override
 
-        cur = state.turn
-        pi = mcts_search(state, net, search_config, no_wall_player=no_wall_player)
+        if wall_prob < 1.0:
+            allow_walls = np.random.random() < wall_prob
+            if not allow_walls:
+                search_config["_force_moves_only"] = True
 
-        # 采样并落子
-        legal = _filter_legal(get_legal_actions(state), state, no_wall_player)
-        action_idx = np.random.choice(config["num_actions"], p=pi)
-        action = None
-        for a in legal:
-            if action_to_index(a) == action_idx:
-                action = a
-                break
+        cur_turn = state.turn
+        cur_net = opponent_net if (opponent_net is not None and cur_turn == 2) else net
 
-        # 编码走子前局面
-        encoded = encode_state(state).cpu().numpy()
+        dist_before = min_distance_to_goal(state, cur_turn)
 
-        ok = action.apply(state) if action else False
-        mover = cur
+        pi, mcts_root_q = mcts_search(state, cur_net, search_config)
+
+        # 策略标签平滑 — 防止策略坍缩
+        ls = config.get("policy_label_smoothing", 0.0)
+        if ls > 0:
+            pi = (1.0 - ls) * pi + ls / config["num_actions"]
 
         sample = {
-            "encoded_state":  encoded,
+            "encoded_state":  encode_state(state).cpu().numpy(),
             "policy_target":  pi.astype(np.float32),
-            "value_target":   0.0,
-            "turn":           mover,
+            "value_target":   0.0,           # 终局后填入
+            "turn":           cur_turn,
+            "progress":       0.0,           # 单步距离改善 (当前玩家视角)
+            "mcts_root_q":    mcts_root_q,   # MCTS 根节点 Q 值 (备用)
         }
         game_data.append(sample)
 
-        if ok:
-            step += 1
-
-    # ── 纯终局 value_target: 所有局面统一使用终局结果 ±1 ──
-    if not winner:
-        d1 = min_distance_to_goal(state, 1)
-        d2 = min_distance_to_goal(state, 2)
-        if d1 != float('inf') and d2 != float('inf') and d1 < d2:
-            winner = 1
-        elif d1 != float('inf') and d2 != float('inf') and d2 < d1:
-            winner = 2
-    if winner:
-        for s in game_data:
-            s["value_target"] = 1.0 if winner == s["turn"] else -1.0
-    else:
-        for s in game_data:
-            s["value_target"] = -1.0
-
-    return game_data
-
-
-# =============================================================================
-# 对手池对弈 — play_vs_opponent_game
-# =============================================================================
-
-def play_vs_opponent_game(net: torch.nn.Module,
-                          opponent_net: torch.nn.Module,
-                          config: dict,
-                          net_plays_as: int = 1,
-                          no_wall_net: bool = False,
-                          no_wall_opp: bool = False) -> tuple[list[dict], float]:
-    """新网络 vs 对手池模型一局，只收集新网络的训练样本。
-
-    参数:
-        net:           当前训练的网络
-        opponent_net:  对手池中的历史模型
-        config:        超参数字典
-        net_plays_as:  新网络扮演哪一方 (1 或 2)
-        no_wall_net:   True=新网络禁止放墙
-        no_wall_opp:   True=对手禁止放墙
-
-    返回:
-        (samples, score): 训练样本列表 + 从新网络视角的终局得分 [-1, 1]
-    """
-    game_data = []
-    state = State()
-    state.reset()
-    step = 0
-    MAX_MOVES = 120  # vs-pool 对局需要足够步数走到底
-
-    eval_config = dict(config)
-    eval_config["dirichlet_weight"] = 0.0       # 对战不打噪声
-    eval_config["temperature"] = 0.5           # vs-pool 温度，保证局面多样性
-
-    while step < MAX_MOVES:
-        winner = check_terminal(state)
-        if winner:
-            break
-
-        is_net_turn = (state.turn == net_plays_as)
-
-        # 选择网络和墙限制
-        cur_net = net if is_net_turn else opponent_net
-        nw = None
-        if no_wall_net and is_net_turn:
-            nw = state.turn
-        elif no_wall_opp and not is_net_turn:
-            nw = state.turn
-
-        pi = mcts_search(state, cur_net, eval_config, no_wall_player=nw)
-
-        # 采样并落子（概率采样，保证多样性）
-        legal = _filter_legal(get_legal_actions(state), state, nw)
         action_idx = np.random.choice(config["num_actions"], p=pi)
         action = None
-        for a in legal:
+        for a in get_legal_actions(state):
             if action_to_index(a) == action_idx:
                 action = a
                 break
-
-        # 编码走子前局面（只收集新网络样本时）
-        if is_net_turn:
-            encoded = encode_state(state).cpu().numpy()
-
-        ok = action.apply(state) if action else False
-
-        # 只收集新网络的样本
-        if is_net_turn:
-            mover = state.turn
-            # 注意: state.turn 在 action.apply 后已翻转，mover 是 apply 前的当前玩家
-            mover = 3 - mover if ok else mover
-            sample = {
-                "encoded_state":  encoded,
-                "policy_target":  pi.astype(np.float32),
-                "value_target":   0.0,
-                "turn":           mover,
-            }
-            game_data.append(sample)
-
-        if ok:
+        if action is not None and action.apply(state):
             step += 1
+            dist_after = min_distance_to_goal(state, cur_turn)
+            if dist_before != float('inf') and dist_after != float('inf'):
+                sample["progress"] = (dist_before - dist_after) / 4.0
+            elif dist_after != float('inf'):
+                sample["progress"] = 0.5
+            elif dist_before != float('inf'):
+                sample["progress"] = -0.5
 
-    # ── 得分与纯终局 value_target ──
-    if not winner:
-        d1 = min_distance_to_goal(state, 1)
-        d2 = min_distance_to_goal(state, 2)
-        if d1 != float('inf') and d2 != float('inf') and d1 < d2:
-            winner = 1
-        elif d1 != float('inf') and d2 != float('inf') and d2 < d1:
-            winner = 2
-    if winner:
-        for s in game_data:
-            s["value_target"] = 1.0 if winner == s["turn"] else -1.0
-        score = 1.0 if net_plays_as == winner else -1.0
+    # =========================================================================
+    # Monte Carlo 折扣回报 — 替换原来的弱 shaping 信号
+    #
+    # 核心思路:
+    #   将每一步的 BFS 距离改善作为即时奖励,
+    #   终局信号作为终端价值,
+    #   然后用 γ 折扣因子反向累积,
+    #   使得早期"向目标前进"的步骤获得更大的累计信用。
+    #
+    # 零和博弈的处理:
+    #   所有奖励先转为 P1 视角 (P2 改善 = 对 P1 不利, 取负),
+    #   计算完 MC 回报后再翻回各自的玩家视角。
+    # =========================================================================
+    gamma = config.get("mc_gamma", 0.95)
+    reward_scale = config.get("reward_scale", 0.5)
+
+    # 终端价值 (P1 视角)
+    d1 = min_distance_to_goal(state, 1)
+    d2 = min_distance_to_goal(state, 2)
+    shape_scale = config.get("distance_scale", 4.0)
+    if d1 == float('inf') and d2 == float('inf'):
+        shape = 0.0
     else:
-        for s in game_data:
-            s["value_target"] = -1.0
-        score = -1.0
+        shape = max(-1.0, min(1.0, (d2 - d1) / shape_scale))
 
-    return game_data, score
+    if winner == 1:
+        v_terminal_p1 = 1.0
+    elif winner == 2:
+        v_terminal_p1 = -1.0
+    else:
+        # 平局: 放大距离 shaping 信号
+        tw = config.get("terminal_value_weight", 0.7)
+        sw = config.get("shape_value_weight", 0.3)
+        v_terminal_p1 = tw * shape * 2.0 + sw * shape  # 加强 draw 信号
+
+    # 构建 P1 视角的每步奖励序列
+    N = len(game_data)
+    if N == 0:
+        return game_data
+
+    rewards_p1 = []
+    for s in game_data:
+        r = s.get("progress", 0.0) * reward_scale
+        if s["turn"] == 1:
+            rewards_p1.append(r)
+        else:
+            rewards_p1.append(-r)   # P2 的进步 = P1 的损失
+
+    # 反向累积折扣回报
+    G = v_terminal_p1
+    for i in range(N - 1, -1, -1):
+        G = rewards_p1[i] + gamma * G
+        # G 现在是 P1 视角的 MC 回报
+        if game_data[i]["turn"] == 1:
+            game_data[i]["value_target"] = G
+        else:
+            game_data[i]["value_target"] = -G
+        game_data[i]["value_target"] = max(-1.0, min(1.0,
+                                            game_data[i]["value_target"]))
+
+    return game_data

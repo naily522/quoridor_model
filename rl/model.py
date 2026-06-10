@@ -8,11 +8,11 @@
 #     价值头 (value head):   输出局面评分（-1 ~ 1）
 #
 # 输入:
-#   经过 encode.py 编码后的状态张量
+#   经过 encode.py 编码后的 7 通道绝对编码状态张量 [B, 7, 9, 9]
 #
 # 输出:
-#   policy: 长度为 164 的概率向量（对应 164 个合法动作）
-#   value:  标量，当前玩家视角的胜率估计
+#   policy: 长度为 225 的概率向量（对应 225 个动作）
+#   value:  标量，当前玩家视角的胜率估计 [-1, 1]
 #
 # 架构说明:
 #   主体为若干卷积层提取空间特征，然后分叉为策略头和价值头。
@@ -24,7 +24,6 @@
 #   net = QuoridorNet()
 #   policy, value = net(encoded_state)
 # =============================================================================
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from quoridor_cpp import State, ROW_SIZE, COLUMN_SIZE
@@ -117,97 +116,101 @@ class QuoridorNet(nn.Module):
         return p, v
     
 # =============================================================================
-# export_weights — 权重导出
+# export_weights — 权重导出 (含 BatchNorm 融合)
 #
 # 功能:
-#   将 PyTorch 模型的所有参数导出为裸二进制 .weights 文件，
-#   供 C++ RLPlayer::load_weights() 读取。
+#   将 BatchNorm 层的参数融合进前一卷积层，导出为裸二进制 .weights 文件，
+#   供 C++ network.hpp::NetworkWeights::load() 读取。
 #
-# 导出格式:
-#   参数按 net.parameters() 的顺序依次写入（参看 __init__ 中各层定义顺序）,
-#   每个参数展平为连续的一维 float32 字节流:
+# BN 融合公式:
+#   scale = gamma / sqrt(running_var + eps)
+#   W' = W * scale                (out_c, 1, 1, 1 广播)
+#   b' = (b - running_mean) * scale + beta
 #
-#     conv_input.0.weight   [128, 6, 3, 3]  → 128×6×3×3 个 float32
-#     conv_input.0.bias     [128]            → 128 个 float32
-#     conv_input.1.weight   [128]            → BN gamma, 128 个 float32
-#     conv_input.1.bias     [128]            → BN beta,  128 个 float32
-#     res_blocks.0.conv_block.0.weight  [128, 128, 3, 3]
-#     ...（后续所有参数依次排列）
-#
-#   最终文件 = 所有 float32 首尾相连的二进制流，
-#   不含任何元数据（网络结构由 C++ 端硬编码保证）。
-#
-# C++ 端读取方式:
-#   FILE* f = fopen(path, "rb");
-#   fread(layer_weights, sizeof(float), layer_size, f);  // 按层依次读取
-#   fclose(f);
+# 导出顺序 (与 network.hpp::load() 严格对应):
+#   conv_input: w[NET_C,6,3,3] + b[NET_C]
+#   NET_RES× ResBlock: w1[NET_C,NET_C,3,3]+b1[NET_C] + w2[NET_C,NET_C,3,3]+b2[NET_C]
+#   policy_conv: w[NET_PC,NET_C,3,3] + b[NET_PC]
+#   policy_fc:   w[225, NET_PC*81] + b[225]
+#   value_conv:  w[1,NET_C,1,1] + b[1]
+#   value_fc0:   w[NET_VH,81] + b[NET_VH]
+#   value_fc2:   w[1,NET_VH] + b[1]
 #
 # 使用方式:
 #   from model import QuoridorNet, export_weights
 #   net = QuoridorNet(CONFIG["input_channels"])
 #   export_weights(net, "rl/weights/quoridor_v1.weights")
 # =============================================================================
-def _fuse_conv_bn(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> tuple[torch.Tensor, torch.Tensor]:
-    """将 Conv2d + BatchNorm2d 融合为等价的无 BN 卷积。"""
-    gamma = bn.weight.data
-    beta = bn.bias.data
-    rm = bn.running_mean.data
-    rv = bn.running_var.data
-    eps = bn.eps
+def _fuse_conv_bn(sd, conv_key, bn_key):
+    """从 state_dict 中取出 Conv+BN 并融合，返回 (fused_weight, fused_bias)."""
+    import numpy as np
+    w = sd[conv_key + ".weight"].cpu().numpy().astype("float32")
+    b = sd[conv_key + ".bias"].cpu().numpy().astype("float32")
+    gamma = sd[bn_key + ".weight"].cpu().numpy().astype("float32")
+    beta = sd[bn_key + ".bias"].cpu().numpy().astype("float32")
+    mean = sd[bn_key + ".running_mean"].cpu().numpy().astype("float32")
+    var = sd[bn_key + ".running_var"].cpu().numpy().astype("float32")
 
-    std = torch.sqrt(rv + eps)
-    fused_w = conv.weight.data * (gamma / std).view(-1, 1, 1, 1)
-    if conv.bias is not None:
-        fused_b = beta + gamma * (conv.bias.data - rm) / std
-    else:
-        fused_b = beta - gamma * rm / std
+    eps = 1e-5
+    scale = gamma / np.sqrt(var + eps)  # [out_c]
+
+    # W' = W * scale.reshape(out_c, 1, 1, 1)
+    out_c = w.shape[0]
+    fused_w = w * scale.reshape(out_c, *([1] * (w.ndim - 1)))
+    # b' = (b - mean) * scale + beta
+    fused_b = (b - mean) * scale + beta
+
     return fused_w, fused_b
 
 
+def _write_tensor(f, arr):
+    """将 numpy 数组或 torch tensor 写入文件 (float32 裸字节)."""
+    import numpy as np
+    import torch
+    if isinstance(arr, torch.Tensor):
+        arr = arr.cpu().detach().numpy()
+    f.write(np.asarray(arr, dtype="float32").tobytes())
+
+
 def export_weights(net: QuoridorNet, path: str) -> None:
-    """将网络参数导出为二进制文件（供 C++ RLPlayer 加载）。
-
-    BatchNorm 会被融合到前一层 Conv2d 中，C++ 端无需 BN 实现。
-    导出顺序（与 C++ NetworkWeights::load 严格对应）:
-
-      conv_input:  fused_weight[32,input_channels,3,3], fused_bias[32]
-      res_blocks × 5: (conv1_w, conv1_b, conv2_w, conv2_b) 各 [32,32,3,3], [32]
-      policy_conv: fused_weight[32,32,3,3], fused_bias[32]
-      policy_fc:   weight[225,2592], bias[225]
-      value_conv:  fused_weight[1,32,1,1], fused_bias[1]
-      value_fc.0:  weight[64,81], bias[64]
-      value_fc.2:  weight[1,64],  bias[1]
-    """
-    params = []
-
-    def _write(t: torch.Tensor):
-        params.append(t.data.cpu().numpy().astype("float32").tobytes())
-
-    # conv_input: Conv2d(0) + BN(1)
-    w, b = _fuse_conv_bn(net.conv_input[0], net.conv_input[1])
-    _write(w); _write(b)
-
-    # res_blocks: 每个 ResBlock 包含 conv_block[0..4]
-    for block in net.res_block:
-        # conv_block[0] Conv2d + conv_block[1] BN
-        w1, b1 = _fuse_conv_bn(block.conv_block[0], block.conv_block[1])
-        _write(w1); _write(b1)
-        # conv_block[3] Conv2d + conv_block[4] BN
-        w2, b2 = _fuse_conv_bn(block.conv_block[3], block.conv_block[4])
-        _write(w2); _write(b2)
-
-    # policy_head: Conv2d(0) + BN(1)
-    w, b = _fuse_conv_bn(net.policy_head[0], net.policy_head[1])
-    _write(w); _write(b)
-    # policy_fc
-    _write(net.policy_fc.weight); _write(net.policy_fc.bias)
-
-    # value_head: Conv2d(0) + BN(1)
-    w, b = _fuse_conv_bn(net.value_head[0], net.value_head[1])
-    _write(w); _write(b)
-    # value_fc
-    _write(net.value_fc[0].weight); _write(net.value_fc[0].bias)
-    _write(net.value_fc[2].weight); _write(net.value_fc[2].bias)
+    """导出融合 BN 后的权重供 C++ 端加载。"""
+    import numpy as np
+    sd = net.state_dict()
 
     with open(path, "wb") as f:
-        f.writelines(params)
+        # ── conv_input: Conv2d(6→NET_C,3×3) + BN(NET_C) 融合 ──
+        fw, fb = _fuse_conv_bn(sd, "conv_input.0", "conv_input.1")
+        _write_tensor(f, fw)   # [NET_C, 6, 3, 3]
+        _write_tensor(f, fb)   # [NET_C]
+
+        # ── N× ResBlock (数量由 CONFIG["res_blocks"] 决定) ──
+        for i in range(CONFIG["res_blocks"]):
+            prefix = f"res_block.{i}.conv_block"
+            # Conv1 + BN1 融合
+            fw1, fb1 = _fuse_conv_bn(sd, f"{prefix}.0", f"{prefix}.1")
+            _write_tensor(f, fw1)  # [32,32,3,3]
+            _write_tensor(f, fb1)  # [32]
+            # Conv2 + BN2 融合
+            fw2, fb2 = _fuse_conv_bn(sd, f"{prefix}.3", f"{prefix}.4")
+            _write_tensor(f, fw2)  # [32,32,3,3]
+            _write_tensor(f, fb2)  # [32]
+
+        # ── policy_head: Conv2d(NET_C→NET_PC,3×3) + BN(NET_PC) 融合 ──
+        fw, fb = _fuse_conv_bn(sd, "policy_head.0", "policy_head.1")
+        _write_tensor(f, fw)   # [NET_PC, NET_C, 3, 3]
+        _write_tensor(f, fb)   # [NET_PC]
+
+        # ── policy_fc: Linear(NET_PC*81→225) (无 BN) ──
+        _write_tensor(f, sd["policy_fc.weight"])  # [225, NET_PC*81]
+        _write_tensor(f, sd["policy_fc.bias"])    # [225]
+
+        # ── value_head: Conv2d(NET_C→1,1×1) + BN(1) 融合 ──
+        fw, fb = _fuse_conv_bn(sd, "value_head.0", "value_head.1")
+        _write_tensor(f, fw)   # [1, NET_C, 1, 1]
+        _write_tensor(f, fb)   # [1]
+
+        # ── value_fc: Linear(81→NET_VH) + Linear(NET_VH→1) (无 BN) ──
+        _write_tensor(f, sd["value_fc.0.weight"])  # [NET_VH, 81]
+        _write_tensor(f, sd["value_fc.0.bias"])    # [NET_VH]
+        _write_tensor(f, sd["value_fc.2.weight"])  # [1, NET_VH]
+        _write_tensor(f, sd["value_fc.2.bias"])    # [1]

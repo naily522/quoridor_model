@@ -7,95 +7,28 @@
 #   否则训练和推理之间会存在"编码鸿沟"导致模型无效。
 #
 # 编码方案 — 多层特征图（适合 CNN）:
-#     将棋盘编码为多个 9×9 的特征通道:
-#       ch 0:  己方位置（=1 的位置）
-#       ch 1:  对方位置
-#       ch 2:  己方剩余墙数（整层填充）
-#       ch 3:  对方剩余墙数（整层填充）
-#       ch 4~: 棋盘上横墙位置（=1 的位置）
-#       ch 5~: 棋盘上竖墙位置（=1 的位置）
-#     输入形状: (batch, C, 9, 9)
-#
-# 注意:
-#   编码是训练和推理共用的契约，修改此处时必须同步修改
-#   player.hpp 中 RLPlayer::encode_state()。
+#     将棋盘编码为 7 个 9×9 的特征通道 (v2: 绝对编码, 打破对称性):
+#       ch 0:  Player 1 位置（绝对, =1 的位置）
+#       ch 1:  Player 2 位置（绝对, =1 的位置）
+#       ch 2:  Player 1 剩余墙数（整层填充, /10 归一化）
+#       ch 3:  Player 2 剩余墙数（整层填充, /10 归一化）
+#       ch 4:  横墙位置（绝对, =1 的位置）
+#       ch 5:  竖墙位置（绝对, =1 的位置）
+#       ch 6:  回合标识（整层填充: 1.0=P1回合, 0.0=P2回合）
+#     输入形状: (batch, C=7, 9, 9)
 #
 # 使用方法:
 #   from encode import encode_state
-#   tensor = encode_state(state_dict)
+#   tensor = encode_state(state)
 # =============================================================================
 import torch
-from collections import deque
-from quoridor_cpp import State, ROW_SIZE, COLUMN_SIZE
+from quoridor_cpp import State, ROW_SIZE, COLUMN_SIZE, encode_state_fast
 from config import CONFIG
 
 
-def min_distance_to_goal(state: State, player: int) -> float:
-    """BFS 计算玩家到目标行的最短步数，绕开墙。不可达返回 inf。"""
-    start = state.get_pos(player)
-    target_row = 2 * ROW_SIZE - 1 if player == 1 else 1
-
-    if start[0] == target_row:
-        return 0.0
-
-    visited = [[False] * (2 * ROW_SIZE + 1) for _ in range(2 * ROW_SIZE + 1)]
-    q = deque()
-    q.append((start[0], start[1], 0))
-    visited[start[0]][start[1]] = True
-
-    while q:
-        r, c, d = q.popleft()
-        for dr, dc in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
-            nr, nc = r + dr, c + dc
-            if nr < 0 or nr > 2 * ROW_SIZE or nc < 0 or nc > 2 * ROW_SIZE:
-                continue
-            if nr % 2 == 0 or nc % 2 == 0:
-                continue
-            if state.get_cell(r + dr // 2, c + dc // 2):
-                continue
-            if visited[nr][nc]:
-                continue
-            if nr == target_row:
-                return d + 1
-            visited[nr][nc] = True
-            q.append((nr, nc, d + 1))
-    return float('inf')
-
-
 def encode_state(state: State) -> torch.Tensor:
-    x = torch.zeros(CONFIG["input_channels"], ROW_SIZE, COLUMN_SIZE)
-
-    # ch 0: current player position
-    my_pos = state.get_pos(state.turn)
-    x[0, my_pos[0] // 2, my_pos[1] // 2] = 1.0
-
-    # ch 1: opponent position
-    opp_pos = state.get_pos(3 - state.turn)
-    x[1, opp_pos[0] // 2, opp_pos[1] // 2] = 1.0
-
-    # ch 2: current player's remaining walls (normalized)
-    x[2, :, :] = state.get_wall_num(state.turn) / 10.0
-
-    # ch 3: opponent's remaining walls (normalized)
-    x[3, :, :] = state.get_wall_num(3 - state.turn) / 10.0
-
-    # ch 4: horizontal walls (read from C++ tracking)
-    for wr in range(9):
-        for wc in range(9):
-            if state.get_h_wall(wr, wc):
-                x[4, wr, wc] = 1.0
-
-    # ch 5: vertical walls (read from C++ tracking)
-    for wr in range(9):
-        for wc in range(9):
-            if state.get_v_wall(wr, wc):
-                x[5, wr, wc] = 1.0
-
-    # ch 6: BFS distance to goal (normalized by 18, max possible distance)
-    d = min_distance_to_goal(state, state.turn)
-    if d == float('inf'):
-        x[6, :, :] = 1.0
-    else:
-        x[6, :, :] = d / 18.0
-
-    return x
+    """将 C++ State 编码为 [C, 9, 9] PyTorch 张量。
+    使用 C++ 端 encode_state_fast() 单次跨语言调用完成全部编码。"""
+    arr = encode_state_fast(state)  # numpy float32 [6, 9, 9]
+    # 转为 PyTorch 张量（复制一份确保可写）
+    return torch.from_numpy(arr.copy())

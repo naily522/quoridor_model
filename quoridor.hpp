@@ -151,34 +151,4 @@ bool isconnect(const bool board[2*Quoridor::ROW_SIZE+1][2*Quoridor::COLUMN_SIZE+
     return false;
 }
 
-// BFS 最短步数 — 从玩家位置到目标行（绕开墙）
-inline int min_distance_to_goal(const Quoridor::State& state, int player) {
-    auto start = state.pos[player - 1];
-    int target_row = (player == 1) ? (2 * Quoridor::ROW_SIZE - 1) : 1;
-
-    if (start.first == target_row) return 0;
-
-    bool visited[2 * Quoridor::ROW_SIZE + 1][2 * Quoridor::COLUMN_SIZE + 1] = {0};
-    queue<pair<pair<int, int>, int>> q;
-    q.push({start, 0});
-    visited[start.first][start.second] = true;
-
-    while (!q.empty()) {
-        auto [pos, d] = q.front();
-        q.pop();
-
-        for (auto& [dr, dc] : vector<pair<int, int>>{{-2, 0}, {2, 0}, {0, -2}, {0, 2}}) {
-            int nr = pos.first + dr, nc = pos.second + dc;
-            if (nr < 0 || nr > 2 * Quoridor::ROW_SIZE || nc < 0 || nc > 2 * Quoridor::COLUMN_SIZE) continue;
-            if (nr % 2 == 0 || nc % 2 == 0) continue;
-            if (state.board[pos.first + dr / 2][pos.second + dc / 2]) continue;
-            if (visited[nr][nc]) continue;
-            if (nr == target_row) return d + 1;
-            visited[nr][nc] = true;
-            q.push({{nr, nc}, d + 1});
-        }
-    }
-    return 999; // 不可达用大数代替 inf
-}
-
 #endif

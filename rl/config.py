@@ -1,53 +1,71 @@
 # =============================================================================
-# 超参数配置 — config.py
+# 超参数配置 — config.py (v3: 深度训练版)
 #
-# 功能:
-#   集中管理强化学习训练的所有超参数。
-#   避免将魔数散落在各个文件中，方便调参。
-#
-# 使用方式:
-#   from config import CONFIG
-#   lr = CONFIG["learning_rate"]
+# 网络: 64通道, 8残差块, 128隐藏层, 120万参数
+# 核心: BFS退火 — 训练早期强引导方向, 后期放手让网络自主
+# 训练时间: ~40-50h (CPU, 60 epochs)
 # =============================================================================
 import os
 
 CONFIG = {
-    # ─── 神经网络 ───
-    "input_channels":      7,        # 输入特征图通道数
-    "num_actions":         225,       # 动作空间大小 (81 移动 + 144 墙)
-    "conv_channels":       32,        # 卷积层通道数
-    "policy_channels":     32,        # 策略头 3×3 卷积降维通道数
-    "value_hidden":        64,        # 价值头全连接隐藏层维度
-    "dropout_rate":        0.3,       # Dropout 比例
-    "res_blocks":          5,         # 残差块数量
+    # ─── 神经网络 (v3: 更大容量) ───
+    "input_channels":      7,
+    "num_actions":         225,
+    "conv_channels":       64,
+    "policy_channels":     32,
+    "value_hidden":        128,
+    "dropout_rate":        0.3,
+    "res_blocks":          8,
 
     # ─── 训练 ───
-    "learning_rate":       1e-3,      # 初始学习率
-    "lr_decay":            0.9,       # 学习率衰减系数
-    "batch_size":          256,       # 训练批次大小
-    "buffer_capacity":     100000,    # Replay buffer 容量
-    "epochs":              50,        # 训练轮数
-    "samples_per_epoch":   2500,      # 每轮新生成的数据量
+    "learning_rate":       3e-4,
+    "lr_decay":            0.98,
+    "batch_size":          256,
+    "buffer_capacity":     80000,
+    "epochs":              60,
+    "samples_per_epoch":   3000,
+    "entropy_weight":      0.20,
+    "grad_clip":           0.5,
+    "buffer_cleanup_epochs": 0,
 
     # ─── MCTS ───
-    "mcts_simulations":    300,       # 搜索次数
-    "c_puct":              1.5,       # MCTS 探索常数
-    "dirichlet_alpha":     0.3,       # 根节点 Dirichlet 噪声参数
-    "dirichlet_weight":    0.25,      # 根节点噪声混合权重
-    "goal_bonus_weight":   0.0,       # 纯终局，不再需要距离引导
+    "mcts_simulations":    400,
+    "c_puct":              1.5,
+    "dirichlet_alpha":     0.6,
+    "dirichlet_weight":    0.15,
+    "goal_bonus_weight":   2.0,        # BFS起始引导
+    "goal_bonus_decay":    0.95,       # 每轮衰减系数
+    "goal_bonus_min":      0.2,        # 最低保留引导
+    "wall_penalty":        0.0,
+    "terminal_value_weight": 0.9,
+    "shape_value_weight":  0.3,
+    "distance_scale":      2.0,
 
     # ─── 自对弈 ───
-    "games_per_iteration": 50,        # 每次迭代的自对弈局数
-    "temperature":         1.0,       # 前若干步的探索温度
-    "temperature_steps":   10,        # 使用温度 > 0 的步数
-    "temperature_min":     0.1,       # 后续步骤的固定温度
+    "games_per_iteration": 30,
+    "temperature":         1.0,
+    "temperature_steps":   15,
+    "temperature_min":     0.2,
+
+    # ─── MC 回报 ───
+    "mc_gamma":            0.97,
+    "reward_scale":        1.0,
+    "policy_label_smoothing": 0.05,
 
     # ─── 评估 ───
-    "eval_games":          20,        # 评估时的对局数
-    "eval_threshold":      0.55,      # 胜率超过此值才替换最佳模型
-    "eval_start_epoch":    10,        # 前 N 轮不比较，直接采用新模型
+    "eval_games":          20,
+    "eval_threshold":      0.10,
+    "eval_start_epoch":    15,
+    "eval_force_update_epochs": 5,
 
     # ─── 权重导出 ───
     "export_dir":          os.path.join(os.path.dirname(__file__), "weights"),
-    "export_name":         "quoridor_v1.weights",  # C++ 端加载的文件名
+    "export_name":         "quoridor_v3.weights",
+
+    # ─── 课程学习 ───
+    "curriculum_moves_only_epochs": 5,
+    "curriculum_wall_fade_epochs":  5,
+
+    # ─── 对手池 ───
+    "opponent_pool_size":   10,
 }

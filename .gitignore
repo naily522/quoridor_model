@@ -1,15 +1,42 @@
+# Build artifacts
 *.o
 *.exe
 *.out
 *.app
+*.pyd
+*.dll
+*.so
+*.dylib
+
+# IDE
 .vs/
 .vscode/
+.idea/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+venv/
+*.egg-info/
+
+# Weights (binary, too large for git)
+rl/weights/quoridor_v1.weights
+rl/weights/*.weights
+
+# Checkpoints (11MB each)
+rl/weights/checkpoints/
+
+# Archives
+*.tar.gz
+*.zip
+
+# OS
 .DS_Store
 Thumbs.db
+
+# Docs
 *.pdf
-*.dll
-*.pt
-*.weights
-*.pyd
+*.tex
+*.aux
+*.log
