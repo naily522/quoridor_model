@@ -21,7 +21,6 @@
 import os
 import argparse
 import copy
-import shutil
 import numpy as np
 import torch
 import torch.nn as nn
@@ -470,18 +469,6 @@ def main():
         os.makedirs(ckpt_dir, exist_ok=True)
         ckpt_path = os.path.join(ckpt_dir, f"epoch_{epoch + 1:03d}.pt")
         save_checkpoint(net, optimizer, epoch, best_state_dict, ckpt_path)
-
-        # ── 同步到 latest/ 目录 (供 scp 一键拉取) ──
-        sync_dir = os.path.join(config["export_dir"], "latest")
-        os.makedirs(sync_dir, exist_ok=True)
-        try:
-            shutil.copy(ckpt_path, os.path.join(sync_dir, "latest_checkpoint.pt"))
-            export_path = os.path.join(config["export_dir"], config["export_name"])
-            if os.path.exists(export_path):
-                shutil.copy(export_path, os.path.join(sync_dir, "latest.weights"))
-            print(f"  -> 已同步到 {sync_dir}")
-        except Exception as e:
-            print(f"  -> 同步失败: {e}")
 
         # 学习率衰减
         scheduler.step()
