@@ -1,4 +1,6 @@
 # Build artifacts
+build/
+dist/
 *.o
 *.exe
 *.out

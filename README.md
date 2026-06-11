@@ -1,6 +1,6 @@
 # Quoridor — 步步为营
 
-C++ 控制台版 Quoridor 棋盘游戏 + Python 强化学习 AI 训练框架。
+Python 强化学习 AI 训练框架（游戏核心逻辑基于 C++ pybind11 扩展）。
 
 ---
 
@@ -9,28 +9,39 @@ C++ 控制台版 Quoridor 棋盘游戏 + Python 强化学习 AI 训练框架。
 ```
 Quoridor/
 │
-├── main.cpp              # 入口，游戏主循环
-├── quoridor.hpp           # 核心逻辑：棋盘状态、行动规则、连通性检查（BFS）
-├── player.hpp             # 玩家体系：HumanPlayer（人类）+ RLPlayer（AI 推理）
-├── view.hpp               # 控制台渲染（Windows Console API）
+├── quoridor.hpp                # 核心逻辑：棋盘状态、行动规则、连通性检查（BFS）
 │
-├── rl/                    # ★ Python 强化学习训练部分
-│   ├── __init__.py        #   包入口，模块概览
-│   ├── config.py          #   超参数配置（学习率、MCTS 模拟次数等）
-│   ├── model.py           #   神经网络定义（策略-价值双头网络）
-│   ├── encode.py          #   状态编码（C++ 棋盘 → PyTorch 张量）
-│   ├── self_play.py       #   自对弈数据生成
-│   ├── train.py           #   训练主循环（自对弈 → 训练 → 导出权重）
-│   ├── requirements.txt   #   Python 依赖
-│   ├── quoridor_bind.cpp  #   pybind11 绑定（C++ 游戏逻辑 → Python）
-│   ├── quoridor_cpp.cp313-win_amd64.pyd  #   编译产物（Python 扩展）
-│   ├── libwinpthread-1.dll               #   MinGW 运行时依赖
-│   ├── build_pyd.sh       #   .pyd 编译脚本
-│   └── weights/           #   训练导出的权重文件（供 C++ 加载）
-│       └── .gitkeep
+├── rl/                         # Python 强化学习训练 + 人机对战
+│   │
+│   ├── __init__.py             # 包入口
+│   ├── config.py               # 超参数配置
+│   ├── encode.py               # 状态编码（C++ 棋盘 → PyTorch 张量）
+│   ├── model.py                # 神经网络定义（策略-价值双头网络）
+│   ├── self_play.py            # MCTS 自对弈数据生成
+│   ├── train.py                # 训练主循环
+│   ├── requirements.txt        # Python 依赖
+│   │
+│   ├── cpp_build/              # ★ C++ 扩展构建源码
+│   │   ├── quoridor_bind.cpp   #   pybind11 绑定（C++ 游戏逻辑 → Python）
+│   │   └── setup.py            #   编译配置
+│   │
+│   ├── quoridor_cpp.cp313-win_amd64.pyd  # 编译好的 Python 扩展（游戏接口）
+│   ├── quoridor_cpp.pyi                  # 类型桩（IDE 提示用）
+│   │
+│   └── weights/                # 训练产出的权重
+│       ├── quoridor_v3.weights
+│       └── checkpoints/
 │
-├── quoridor.exe           # 编译产物
-└── README.md              # 本文件
+├── gui/                         # 图形界面（Pygame）
+│   ├── __init__.py
+│   └── gui.py                   # Pygame 前端，支持人机对战 & AI 自对弈
+│
+├── play_ai.py                  # 人机对战（Python 版，MCTS + 神经网络）
+├── run_train.py                # 训练启动脚本
+├── export_weights.py           # 独立权重导出工具
+├── build_gui.spec              # PyInstaller 打包配置
+│
+└── README.md
 ```
 
 ---
@@ -40,35 +51,29 @@ Quoridor/
 ### 数据流
 
 ```
-┌──────────────────────────────────────────────────┐
-│  Python 训练阶段                                  │
-│                                                    │
-│  self_play.py                                      │
-│  ┌──────────────────────┐                         │
-│  │ 当前网络 + MCTS 自对弈 │──→  replay buffer      │
-│  └──────┬───────────────┘                         │
-│         │                                         │
-│         ▼                                         │
-│  model.py  ←── train.py  ←── config.py            │
-│  (策略-价值网络)    (训练循环)    (超参数)           │
-│         │                                         │
-│         ▼                                         │
-│  export_weights() →  .weights 二进制文件           │
-└──────────────────┬───────────────────────────────┘
-                   │ 权重文件
-                   ▼
-┌──────────────────────────────────────────────────┐
-│  C++ 推理阶段 (RLPlayer)                           │
-│                                                    │
-│  player.hpp                                        │
-│  ┌──────────────────────┐                         │
-│  │ load_weights()        │  ← 加载 .weights        │
-│  │ encode_state()        │  ← 棋盘 → 张量          │
-│  │ forward()             │  ← 神经网络推理          │
-│  │ softmax + sample()    │  ← 按概率采样动作        │
-│  │ Action::apply()       │  ← 执行并校验合法性      │
-│  └──────────────────────┘                         │
-└──────────────────────────────────────────────────┘
+                          ┌──────────────────┐
+                          │   quoridor.hpp    │
+                          │  C++ 游戏核心逻辑  │
+                          └────────┬─────────┘
+                                   │ pybind11 绑定 (quoridor_bind.cpp)
+                                   ▼
+                   ┌───────────────────────────┐
+                   │  quoridor_cpp.pyd         │
+                   │  State / Action / 合法动作  │
+                   └──────────┬────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+   ┌────────────┐     ┌──────────────┐     ┌──────────────┐
+   │ encode.py  │     │ self_play.py │     │  play_ai.py  │
+   │ 状态编码    │     │ MCTS + 自对弈 │     │ 人机对战      │
+   └─────┬──────┘     └──────┬───────┘     └──────────────┘
+         │                   │
+         ▼                   ▼
+   ┌─────────────────────────────────┐
+   │  model.py (PyTorch 神经网络)     │
+   │  train.py (训练主循环)            │
+   └─────────────────────────────────┘
 ```
 
 ### pybind11 跨语言桥接
@@ -94,20 +99,11 @@ Quoridor/
 └─────────────────────────────────────────┘
 ```
 
-### 两大阶段
-
-| 阶段 | 位置 | 工具 | 产出 |
-|------|------|------|------|
-| **训练** | `rl/` 目录，Python | PyTorch + 自对弈 | `.weights` 权重文件 |
-| **推理** | C++ `RLPlayer` | 加载权重 + 前向传播 | 每步决策 |
-
-训练结束后，C++ 端完全独立运行，不依赖 Python 环境。
-
 ---
 
 ## 强化学习训练流程
 
-### 算法选择（推荐：AlphaZero 风格）
+### 算法（AlphaZero 风格）
 
 1. **自对弈**：当前网络与自身对弈，每步用 **MCTS（蒙特卡洛树搜索）** 增强决策质量
 2. **数据**：每局产生 `(state, π_target, z)` 三元组
@@ -116,20 +112,19 @@ Quoridor/
    - `z`：最终胜负结果（当前玩家视角，+1 / -1）
 3. **训练**：从 replay buffer 采样，最小化损失
    ```
-   L = (π_target - π_pred)² 策略损失
-     + (z - v_pred)²        价值损失
-     + λ·‖θ‖²               L2 正则化
+   L = (π_target - π_pred)²  策略损失
+     + (z - v_pred)²         价值损失
    ```
 4. **迭代**：新网络与最佳网络比赛，胜率超过阈值则替换
-5. **导出**：训练完成后导出权重供 C++ 加载
+5. **导出**：训练完成后导出 `.weights` 文件
 
 ### 动作空间（225 个动作）
 
 | 动作 ID | 类型 | 说明 |
 |---------|------|------|
-| 0 ~ 3 | 移动 | 上下左右 |
-| 4 ~ 83 | 水平墙 | 8 行 × 10 列 |
-| 84 ~ 163 | 垂直墙 | 10 行 × 8 列 |
+| 0 ~ 80 | 移动 | 9×9 目标格 |
+| 81 ~ 152 | 垂直墙 | 8×9 = 72 个位置 |
+| 153 ~ 224 | 水平墙 | 9×8 = 72 个位置 |
 
 > 初始状态下实际可用动作为 147 个（3 移动 + 144 放墙），
 > 随棋盘局势动态变化。
@@ -138,119 +133,134 @@ Quoridor/
 
 ## 各文件详细说明
 
-### C++ 部分
-
-| 文件 | 核心类/函数 | 职责 |
-|------|------------|------|
-| `quoridor.hpp` | `Quoridor::State`, `Quoridor::Action`, `isconnect()` | 棋盘状态、行动合法性、BFS 连通性检测 |
-| `player.hpp` | `Player`（基类）, `HumanPlayer`, `RLPlayer` | 玩家抽象接口 + 人类交互 + AI 推理骨架 |
-| `view.hpp` | `display_board()` | Windows 控制台棋盘渲染 |
-| `main.cpp` | `main()` | 游戏主循环，回合制交替落子 |
-
-### Python 部分
+### Python 训练源码（`rl/`）
 
 | 文件 | 职责 | 关键函数 |
 |------|------|---------|
 | `config.py` | 所有超参数集中管理 | `CONFIG` 字典 |
 | `model.py` | 神经网络定义（卷积 + 策略头 + 价值头） | `QuoridorNet`, `export_weights()` |
 | `encode.py` | 棋盘状态 → 张量 | `encode_state()` |
-| `self_play.py` | MCTS 自对弈生成训练数据 | `self_play_game()`, `MCTS` 类 |
-| `train.py` | 训练主循环，协调各模块 | `train()`, `evaluate()`, `export()` |
-| `quoridor_bind.cpp` | pybind11 绑定 | 将 C++ 游戏逻辑暴露给 Python |
+| `self_play.py` | MCTS 自对弈生成训练数据 | `play_one_game()`, `mcts_search()` |
+| `train.py` | 训练主循环，协调各模块 | `main()` |
+
+### 人机对战 / 图形界面
+
+| 文件 | 说明 |
+|------|------|
+| `play_ai.py` | 控制台人机对战，Python 版 MCTS + 神经网络 |
+| `gui/gui.py` | Pygame 图形界面，支持人机对战 & AI 自对弈 |
+| `build_gui.spec` | PyInstaller 打包配置，将 GUI 打包为独立 `.exe` |
+| `export_weights.py` | 从 checkpoint 导出 `.weights` 权重文件的独立工具 |
+
+### C++ 扩展（`rl/cpp_build/`）
+
+| 文件 | 说明 |
+|------|------|
+| `quoridor_bind.cpp` | pybind11 绑定源码，将 `quoridor.hpp` 暴露给 Python |
+| `setup.py` | 扩展编译配置 |
 
 ---
 
 ## 如何开始
 
-### 编译 C++ 版本
-
-```bash
-g++ main.cpp -o quoridor.exe -std=c++17
-```
-
-运行后即双人轮流操作的控制台游戏。
-
-### 编译 pybind11 扩展（Python 调用 C++ 游戏逻辑）
-
-```bash
-bash rl/build_pyd.sh
-```
-
-产出 `rl/quoridor_cpp.cp313-win_amd64.pyd`，编译后在 Python 中 import 即可调用 C++ 函数。
-
-### 在 Python 中使用 C++ 函数
-
-```python
-import sys; sys.path.insert(0, 'rl')
-from quoridor_cpp import (
-    # ── 类 ──
-    State,       # 棋盘状态
-    Action,      # 动作（移动/放墙）
-
-    # ── 常量 ──
-    ROW_SIZE,    # 9
-    COLUMN_SIZE, # 9
-    WALL_NUM,    # 10
-    WALL_LENGTH, # 2
-    BOARD_SIZE,  # 19
-    ACTION_NUM,  # 225
-
-    # ── 函数 ──
-    isconnect,            # BFS 连通性检查
-    get_legal_moves,      # 合法移动枚举
-    get_legal_walls,      # 合法放墙枚举
-    get_legal_actions,    # 全部合法动作（融合移动+放墙）
-)
-
-# 创建棋盘
-s = State()
-s.reset()
-print(f"当前轮到玩家 {s.turn}")
-print(f"玩家1 位置: {s.get_pos(1)}")
-print(f"玩家2 位置: {s.get_pos(2)}")
-
-# 枚举所有合法动作
-actions = get_legal_actions(s)
-print(f"合法动作数: {len(actions)}")
-
-# 执行一个动作
-a = Action((3, 9), False, 0)   # 向下移动一步
-ok = a.apply(s)                  # 应用动作
-print(f"移动 {'成功' if ok else '失败'}, 轮到玩家 {s.turn}")
-
-# 放墙（必须放在偶数坐标）
-wall = Action((2, 2), True, 1)  # 水平墙
-ok = wall.apply(s)
-
-# 深拷贝（MCTS 树搜索时使用）
-s2 = s.copy()
-```
-
-### 设置 Python 训练环境
+### 安装依赖
 
 ```bash
 pip install -r rl/requirements.txt
 ```
 
-### 训练流程（待实现后）
+### 运行人机对战
+
+```bash
+python play_ai.py
+```
+
+AI 会自动加载 `rl/weights/` 下最新的 checkpoint 进行 MCTS 搜索。
+
+### 运行图形界面
+
+```bash
+pip install pygame
+python gui/gui.py
+```
+
+支持两种模式：
+- **人机对战**：P1 人类（鼠标点击落子/放墙），P2 AI
+- **AI 自对弈**：观看两个 AI 对局
+
+快捷键：`N` = 新对局（人机）、`A` = 新对局（AI自对弈）、`ESC` = 退出
+
+### 打包为独立 EXE（方便分发给无 Python 环境的用户）
+
+```bash
+pip install pyinstaller
+pyinstaller build_gui.spec
+```
+
+产物在 `dist/Quoridor.exe`（单文件）和 `dist/Quoridor/`（目录模式）。
+
+**后续重新打包只需**：
+```bash
+pyinstaller build_gui.spec
+```
+（修改了 `gui/gui.py` 或换用了新的 checkpoint 后，重新运行此命令即可。）
+
+### 训练
 
 ```bash
 # 从头训练
-python rl/train.py
+python run_train.py
 
 # 从 checkpoint 继续
-python rl/train.py --resume rl/checkpoints/latest.pt
+python run_train.py --resume rl/weights/checkpoints/epoch_010.pt
 
-# 只导出权重（已有 checkpoint 时）
-python rl/train.py --export-only rl/checkpoints/best.pt
+# 只导出权重
+python run_train.py --export-only rl/weights/checkpoints/epoch_020.pt
 ```
+
+---
+
+## 重新编译 C++ 扩展
+
+如果你修改了 `quoridor.hpp` 或 `quoridor_bind.cpp`，需要重新编译 `.pyd`：
+
+```bash
+cd rl/cpp_build
+python setup.py build_ext --build-lib ..
+```
+
+编译产物 `quoridor_cpp.cp313-win_amd64.pyd` 会输出到 `rl/` 目录（即 `--build-lib ..` 指定的上级目录），覆盖旧的扩展文件。
+
+### 前置条件
+
+- Python 3.8+
+- pybind11（`pip install pybind11`）
+- C++17 编译器（Windows 推荐 MSVC，由 Visual Studio Build Tools 或 `pip install setuptools` 自动配置）
+
+---
+
+## 常见问题
+
+### ImportError: No module named 'quoridor_cpp'
+
+`.pyd` 找不到或被删除了。确认 `rl/quoridor_cpp.cp313-win_amd64.pyd` 存在，且从项目根目录运行 Python（`run_train.py` 会自动处理路径）。
+
+如果需要重新编译，见上方"重新编译 C++ 扩展"章节。
+
+### OSError: ... not found (DLL 加载失败)
+
+`.pyd` 依赖的运行时库缺失。通常只需要安装 [Microsoft Visual C++ Redistributable](https://aka.ms/vc/redist) 即可解决。如果使用 MinGW 编译，可能需要保留 `libwinpthread-1.dll` 在同目录下。
+
+### torch 相关错误
+
+确认已安装 PyTorch：`pip install -r rl/requirements.txt`。
+如果使用 CPU 训练，`pip install torch --index-url https://download.pytorch.org/whl/cpu` 可避免下载 CUDA 版。
 
 ---
 
 ## 关键设计决策
 
-1. **纯头文件 C++**：所有逻辑写在 `.hpp` 中，编译仅需 `g++ main.cpp -std=c++17`，零依赖
-2. **棋盘编码**：`19×19` 网格，奇/偶坐标编码格子和墙的关系，避免额外数据结构
-3. **放墙校验**：双重检查——物理重叠 + BFS 路径连通性
-4. **训练推理分离**：Python 训练，C++ 推理，通过二进制权重文件通信
-5. **pybind11 桥接**：Python 训练期间直接调用 C++ 游戏规则（合法动作枚举、走棋校验），避免 Python 端重复实现一套规则逻辑
+1. **Python 优先**：训练和人机对战全部用 Python，不再维护独立的 C++ 可执行文件
+2. **pybind11 桥接**：游戏核心逻辑（合法动作枚举、走棋校验）用 C++ 实现，Python 通过编译好的 `.pyd` 直接调用，避免 Python 端重复实现一套规则，同时保持训练速度
+3. **棋盘编码**：`19×19` 网格，奇/偶坐标编码格子和墙的关系，避免额外数据结构
+4. **放墙校验**：物理重叠 + BFS 路径连通性双重检查

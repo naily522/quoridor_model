@@ -2,8 +2,8 @@ from setuptools import setup, Extension
 import pybind11
 import os
 
-# Project root = parent of rl/
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Project root = rl/cpp_build/../../
+project_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..')
 
 ext = Extension(
     'quoridor_cpp',
